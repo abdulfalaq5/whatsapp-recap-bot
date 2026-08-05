@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Runtime data & credentials
+auth_session/
+data/
+*.db
+
+# Env
+.env
+
+# Git
+.git/
+
+# Logs
+*.log

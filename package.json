@@ -1,0 +1,22 @@
+{
+  "name": "whatsapp-recap-bot",
+  "version": "1.0.0",
+  "description": "Asisten AI grup WhatsApp (Baileys + Ollama) dengan mode rekap dan mode tanya-jawab",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6",
+    "better-sqlite3": "^11",
+    "dotenv": "^16",
+    "node-cron": "^3",
+    "pino": "^9",
+    "qrcode-terminal": "^0.12"
+  }
+}

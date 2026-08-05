@@ -1,0 +1,16 @@
+services:
+  whatsapp-assistant:
+    build: .
+    container_name: whatsapp-assistant
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./auth_session:/app/auth_session
+      - ./data:/app/data
+    extra_hosts:
+      # Supaya container bisa akses Ollama yang jalan di host (Linux perlu ini secara eksplisit)
+      - "host.docker.internal:host-gateway"
+    # QR code login perlu dilihat di terminal saat first-run
+    stdin_open: true
+    tty: true
