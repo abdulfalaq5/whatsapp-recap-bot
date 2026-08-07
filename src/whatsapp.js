@@ -1,6 +1,7 @@
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
+import { readdir, rm } from 'fs/promises';
 import * as storage from './storage.js';
 import { parseMessage, handleRekap, HELP_TEXT } from './commands.js';
 import { handleAssistant } from './assistant.js';
@@ -9,6 +10,7 @@ let config;
 let logger;
 
 const seenGroups = new Set();
+const RECONNECT_DELAY_MS = 5000;
 
 function extractMessageText(msg) {
   if (!msg.message) return '';
@@ -26,12 +28,18 @@ function extractMessageText(msg) {
 }
 
 function buildWhitelist(raw) {
-  return new Set(
-    (raw || '')
-      .split(',')
-      .map((id) => id.trim().toLowerCase())
-      .filter(Boolean)
-  );
+  const parts = (raw || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
+  // Wildcard '*' → izinkan semua group
+  const allowAll = parts.includes('*');
+  const ids = new Set(parts.filter((id) => id !== '*').map((id) => id.toLowerCase()));
+  return { allowAll, ids };
+}
+
+function isGroupAllowed(groupId) {
+  return config.whitelist.allowAll || config.whitelist.ids.has(groupId.toLowerCase());
 }
 
 function getSenderNumber(msg) {
@@ -46,12 +54,19 @@ async function handleIncomingMessage(sock, msg) {
 
   const groupId = msg.key.remoteJid;
   if (!groupId || !groupId.endsWith('@g.us')) return;
-  if (!config.whitelist.has(groupId.toLowerCase())) return;
 
+  // Log SEMUA group yang mengirim pesan (whitelisted atau tidak),
+  // supaya pengguna bisa menemukan ID group asli lalu menambahkannya ke .env.
   if (!seenGroups.has(groupId)) {
     seenGroups.add(groupId);
-    logger.info({ groupId }, 'Whitelisted group detected. Catat ID ini untuk konfigurasi.');
+    const isWhitelisted = isGroupAllowed(groupId);
+    logger.info({ groupId, whitelisted: isWhitelisted },
+      isWhitelisted
+        ? 'Whitelisted group detected. Bot aktif di group ini.'
+        : 'Pesan dari group yang BELUM di-whitelist. Tambahkan ID ini ke WHITELIST_GROUP_IDS di .env supaya bot merespons di sini.');
   }
+
+  if (!isGroupAllowed(groupId)) return;
 
   const senderNumber = getSenderNumber(msg);
   const isBotMentioned = text.toLowerCase().includes(config.triggerWord);
@@ -107,52 +122,76 @@ export async function startWhatsApp(env, log) {
     triggerWord: (env.ASSISTANT_TRIGGER_WORD || '@kacan').toLowerCase(),
   };
   logger = log;
-  logger.info({ whitelist: [...config.whitelist] }, 'WhatsApp config loaded');
+  logger.info({ whitelist: [...config.whitelist.ids], allowAll: config.whitelist.allowAll }, 'WhatsApp config loaded');
 
   const { state, saveCreds } = await useMultiFileAuthState('auth_session');
   const { version, isLatest } = await fetchLatestBaileysVersion();
   logger.info({ version, isLatest }, 'Baileys version resolved');
 
-  const sock = makeWASocket({
-    version,
-    auth: state,
-    printQRInTerminal: false,
-    logger: pino({ level: 'warn' }), // redam log internal Baileys, kita pakai logger sendiri
-    browser: ['WhatsApp Bot', 'Chrome', 'Linux'],
-    markOnlineOnConnect: true,
-  });
+  let sock = null;
 
-  sock.ev.on('creds.update', saveCreds);
+  const connect = async () => {
+    sock = makeWASocket({
+      version,
+      auth: state,
+      printQRInTerminal: false,
+      logger: pino({ level: 'warn' }), // redam log internal Baileys, kita pakai logger sendiri
+      browser: ['WhatsApp Bot', 'Chrome', 'Linux'],
+      markOnlineOnConnect: true,
+    });
 
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    sock.ev.on('creds.update', saveCreds);
 
-    if (qr) {
-      logger.info('Scan QR berikut dengan WhatsApp di HP (WhatsApp > Linked Devices):');
-      qrcode.generate(qr, { small: true });
-    }
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
 
-    if (connection === 'open') {
-      logger.info('WhatsApp terhubung. Bot siap.');
-    }
-
-    if (connection === 'close') {
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-      logger.error({ statusCode }, 'Koneksi WhatsApp tertutup' + (isLoggedOut ? ' (logged out)' : ''));
-      if (isLoggedOut) {
-        logger.info('Session di-logout manual. Jalankan ulang container untuk scan QR baru.');
-        process.exit(1);
+      if (qr) {
+        logger.info('Scan QR berikut dengan WhatsApp di HP (WhatsApp > Linked Devices):');
+        qrcode.generate(qr, { small: true });
       }
-    }
-  });
 
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
-    for (const msg of messages) {
-      await handleIncomingMessage(sock, msg);
-    }
-  });
+      if (connection === 'open') {
+        logger.info('WhatsApp terhubung. Bot siap.');
+      }
 
-  return sock;
+      if (connection === 'close') {
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+        logger.error({ statusCode }, 'Koneksi WhatsApp tertutup' + (isLoggedOut ? ' (logged out)' : ''));
+
+        if (isLoggedOut) {
+          // Sesi sudah mati: hapus isi auth_session (folder itu sendiri adalah mount point,
+          // jadi tidak boleh dihapus) supaya restart berikutnya muncul QR baru.
+          logger.info('Sesi WhatsApp di-logout. Menghapus auth_session untuk scan QR baru...');
+          try {
+            for (const entry of await readdir('auth_session')) {
+              await rm(`auth_session/${entry}`, { recursive: true, force: true });
+            }
+            logger.info('auth_session dihapus. Container akan restart dan menampilkan QR.');
+          } catch (err) {
+            logger.error({ err }, 'Gagal menghapus auth_session');
+          }
+          process.exit(1);
+        }
+
+        // 515 = restartRequired, dan alasan lain (network blip dll): reconnect otomatis
+        logger.info({ statusCode, retryInSeconds: RECONNECT_DELAY_MS / 1000 }, 'Mencoba koneksi ulang WhatsApp...');
+        setTimeout(connect, RECONNECT_DELAY_MS);
+      }
+    });
+
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify') return;
+      for (const msg of messages) {
+        await handleIncomingMessage(sock, msg);
+      }
+    });
+  };
+
+  await connect();
+
+  return {
+    getSocket: () => sock,
+    end: (err) => sock?.end?.(err),
+  };
 }

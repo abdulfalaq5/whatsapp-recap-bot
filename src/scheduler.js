@@ -2,7 +2,7 @@ import cron from 'node-cron';
 import * as storage from './storage.js';
 import { handleRekap } from './commands.js';
 
-export function startScheduler(sock, env, logger) {
+export function startScheduler(getSocket, env, logger) {
   const enabled = String(env.AUTO_RECAP_ENABLED || 'false').toLowerCase() === 'true';
   const cronExpr = env.AUTO_RECAP_CRON || '0 21 * * *';
   const groupIds = (env.WHITELIST_GROUP_IDS || '')
@@ -20,14 +20,27 @@ export function startScheduler(sock, env, logger) {
     return null;
   }
 
+  // Wildcard '*' tidak cukup untuk auto rekap (bot tidak bisa tahu daftar semua group),
+  // jadi wajib daftar ID group eksplisit.
+  const explicit = groupIds.filter((id) => id !== '*');
+  if (explicit.length === 0) {
+    logger.warn('AUTO_RECAP_ENABLED=true tapi WHITELIST_GROUP_IDS hanya berisi "*". Auto rekap butuh daftar ID group eksplisit.');
+    return null;
+  }
+
   if (!cron.validate(cronExpr)) {
     logger.error({ cronExpr }, 'AUTO_RECAP_CRON tidak valid, auto recap di-skip');
     return null;
   }
 
   const task = cron.schedule(cronExpr, async () => {
-    logger.info({ cronExpr, groupIds }, 'Running auto recap');
-    for (const groupId of groupIds) {
+    logger.info({ cronExpr, groupIds: explicit }, 'Running auto recap');
+    const sock = getSocket();
+    if (!sock) {
+      logger.warn('Socket WhatsApp belum tersedia, auto recap di-skip');
+      return;
+    }
+    for (const groupId of explicit) {
       try {
         await handleRekap(sock, logger, groupId, ''); // rekap hari ini
       } catch (err) {
@@ -36,6 +49,6 @@ export function startScheduler(sock, env, logger) {
     }
   });
 
-  logger.info({ cronExpr, groupIds }, 'Auto recap scheduler started');
+  logger.info({ cronExpr, groupIds: explicit }, 'Auto recap scheduler started');
   return task;
 }

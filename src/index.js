@@ -25,8 +25,8 @@ async function main() {
   runPrune();
   setInterval(runPrune, 24 * 60 * 60 * 1000);
 
-  const sock = await startWhatsApp(process.env, logger);
-  const scheduler = startScheduler(sock, process.env, logger);
+  const wa = await startWhatsApp(process.env, logger);
+  const scheduler = startScheduler(() => wa.getSocket(), process.env, logger);
 
   logger.info(`Last stored message timestamp: ${getLastMessageTimestamp() ?? 'none'}`);
 
@@ -34,7 +34,7 @@ async function main() {
     logger.info({ signal }, 'Shutting down...');
     try {
       if (scheduler) scheduler.stop();
-      if (sock?.end) sock.end(new Error('bot shutting down'));
+      if (wa.end) wa.end(new Error('bot shutting down'));
       closeStorage();
     } catch (err) {
       logger.error({ err }, 'Error during shutdown');

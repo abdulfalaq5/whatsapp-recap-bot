@@ -18,7 +18,7 @@ Asisten AI serba guna untuk grup WhatsApp: mode tanya-jawab (`@kacan`, `!ai`, `!
    ```
 
    Isi minimal yang wajib:
-   - `WHITELIST_GROUP_IDS` — ID grup yang boleh dipakai bot (pisahkan koma untuk beberapa grup). Isi dulu `xxxxx@g.us` sebagai placeholder; nanti akan terlihat ID asli di log setelah bot menerima pesan pertama dari grup.
+   - `WHITELIST_GROUP_IDS` — ID grup yang boleh dipakai bot (pisahkan koma untuk beberapa grup). Bisa diisi kosong dulu lalu tambahkan setelah mendapat ID dari log (lihat "Cara Mendapatkan Group ID"). Bisa juga diisi `*` untuk mengizinkan semua group — tapi ini tidak disarankan karena siapa pun yang menambahkan nomor bot ke group-nya bisa langsung memakai AI ini.
    - `OLLAMA_MODEL` — nama model yang sudah di-pull.
    - `OLLAMA_BASE_URL` — biarkan `http://host.docker.internal:11434` (khusus Docker). Kalau jalan langsung tanpa Docker, ganti `http://localhost:11434`.
 
@@ -48,12 +48,12 @@ Asisten AI serba guna untuk grup WhatsApp: mode tanya-jawab (`@kacan`, `!ai`, `!
 
 ## Cara Mendapatkan Group ID
 
-ID grup muncul otomatis di log begitu bot menerima pesan dari grup yang terdaftar di whitelist. Kalau `WHITELIST_GROUP_IDS` masih placeholder:
+Bot kini menampilkan **semua** ID group yang mengirim pesan ke log, walau belum di-whitelist (format `123456789-123456@g.us`). Caranya:
 
-1. Set `WHITELIST_GROUP_IDS=xxxxx@g.us` sementara.
-2. Kirim pesan apa pun dari grup itu ke bot (bot akan menyimpan pesannya).
-3. Cek log: `docker compose logs -f` → cari baris `Whitelisted group detected. Catat ID ini...` yang berisi ID asli (format `123456789-123456@g.us`).
-4. Tempel ID asli ke `.env`, lalu `docker compose up -d --force-recreate`.
+1. Tambahkan nomor bot ke group WhatsApp.
+2. Kirim pesan apa pun dari group itu (bot akan menyimpan ID-nya di log, meski belum membalas).
+3. Cek log: `docker compose logs -f` → cari baris `Pesan dari group yang BELUM di-whitelist. Tambahkan ID ini ke WHITELIST_GROUP_IDS...` dan salin ID-nya.
+4. Tempel ID asli ke `.env`, lalu `docker compose up -d --force-recreate` (atau `docker compose restart`).
 
 ## Command Bot
 
@@ -75,7 +75,7 @@ Catatan: bot hanya merespons saat ada trigger (`@kacan`/`!ai`/`!tanya`) atau com
 |---|---|---|
 | `OLLAMA_MODEL` | `llama3.1` | Model Ollama |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | URL Ollama |
-| `WHITELIST_GROUP_IDS` | — | ID grup, pisahkan koma |
+| `WHITELIST_GROUP_IDS` | — | ID grup yang diizinkan, pisahkan koma. Isi `*` untuk semua group (tidak disarankan). |
 | `AUTO_RECAP_ENABLED` | `false` | Aktifkan rekap otomatis |
 | `AUTO_RECAP_CRON` | `0 21 * * *` | Jadwal rekap harian (jam 21:00) |
 | `ASSISTANT_TRIGGER_WORD` | `@kacan` | Trigger word asisten |
