@@ -1,6 +1,8 @@
-# WhatsApp AI Assistant Bot (Baileys + Ollama)
+# WhatsApp Family Assistant Bot (Baileys + Ollama)
 
-Asisten AI serba guna untuk grup WhatsApp: mode tanya-jawab (`@kacan`, `!ai`, `!tanya`) dan mode rekap chat (`!rekap`). Berjalan di Docker, memakai Ollama lokal sebagai LLM.
+Asisten keluarga WhatsApp berbasis Baileys + Ollama: tanya-jawab (`@kacan`, `!ai`, `!tanya`), rekap chat (`!rekap`), reminder, shopping list, catatan pengeluaran, cuaca, dan jadwal sholat. Berjalan di Docker.
+
+Mode AI punya fallback otomatis multi-provider: Ollama lokal dulu, lalu kalau gagal/timeout atau kuota limit habis, otomatis pindah ke provider cloud gratis (Gemini → Groq → OpenRouter `:free`), dan kalau semua habis baru ke Anthropic/SumoPod. Cek status dengan `@kacan status provider`.
 
 ## Prasyarat
 
@@ -61,13 +63,35 @@ Bot kini menampilkan **semua** ID group yang mengirim pesan ke log, walau belum 
 |---|---|
 | `@kacan <pertanyaan>` | Panggil asisten AI (bisa di tengah kalimat) |
 | `!ai <pertanyaan>` / `!tanya <pertanyaan>` | Alternatif panggil asisten |
+| `@kacan naikan level mu` | Pindahkan chat ini ke mode cloud (langsung pakai provider cloud, tidak coba Ollama) |
+| `@kacan standarkan level` | Kembalikan ke mode standar (coba Ollama dulu, fallback otomatis ke cloud) |
+| `@kacan status level` | Cek level AI chat ini saat ini (standard/cloud) |
+| `@kacan status provider` | Cek status provider cloud (aktif / cooldown / belum di-set) |
 | `!rekap` | Rekap chat hari ini |
 | `!rekap kemarin` | Rekap chat kemarin |
 | `!rekap 3hari` | Rekap 3 hari terakhir |
 | `!lupa` / `!reset` | Hapus memori percakapan asisten grup |
+| `!lupakan` | Hapus histori percakapan kamu sendiri |
+| `!ingetin <pesan>` | Buat reminder, contoh: `!ingetin bayar listrik tgl 20 jam 9 pagi` |
+| `!reminder list` / `!reminder hapus <id>` | Lihat / hapus reminder |
+| `!belanja tambah <item>` | Tambah item ke daftar belanja (shared keluarga) |
+| `!belanja list` / `!belanja selesai <item>` | Lihat daftar / tandai selesai |
+| `!catat <jumlah> <catatan>` | Catat pengeluaran, contoh: `!catat 50000 belanja bulanan` |
+| `!rekap bulan ini` | Rekap pengeluaran bulan ini per kategori |
+| `!export` | Export pengeluaran bulan ini ke file CSV |
+| `!cuaca` | Info cuaca hari ini (Open-Meteo) |
+| `!sholat` | Jadwal sholat hari ini (Aladhan) |
 | `!help` / `!bantuan` | Daftar command |
 
-Catatan: bot hanya merespons saat ada trigger (`@kacan`/`!ai`/`!tanya`) atau command. Pesan biasa hanya disimpan sebagai histori, tidak dijawab.
+**Command admin (nomor di `ADMIN_NUMBERS`):**
+| Command | Aksi |
+|---|---|
+| `!restart` | Restart bot |
+| `!log` | Kirim log terakhir |
+| `!broadcast <pesan>` | Kirim pengumuman ke semua group/anggota |
+| `!tambahmember <nomor> <nama>` | Daftarkan anggota keluarga |
+
+Catatan: bot hanya merespons saat ada trigger (`@kacan`/`!ai`/`!tanya`) atau command. Pesan biasa hanya disimpan sebagai histori, tidak dijawab. Nomor yang tidak terdaftar sebagai anggota keluarga tidak diproses.
 
 ## Konfigurasi `.env`
 
@@ -75,21 +99,53 @@ Catatan: bot hanya merespons saat ada trigger (`@kacan`/`!ai`/`!tanya`) atau com
 |---|---|---|
 | `OLLAMA_MODEL` | `llama3.1` | Model Ollama |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | URL Ollama |
+| `OLLAMA_TEMPERATURE` | `0.6` | Suhu model Ollama (rendah = jawaban lebih fokus/tidak nyasar) |
+| `OLLAMA_MAX_TOKENS` | `1024` | Batas token jawaban Ollama (rekap otomatis 2048) |
+| `GEMINI_API_KEY` | — | API key Gemini (free tier). Urutan teratas di chain cloud. |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Model Gemini |
+| `GEMINI_MAX_TOKENS` | `1024` | Batas token jawaban Gemini |
+| `GROQ_API_KEY` | — | API key Groq (free tier). |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Model Groq |
+| `GROQ_MAX_TOKENS` | `1024` | Batas token jawaban Groq |
+| `OPENROUTER_API_KEY` | — | API key OpenRouter (pakai model `:free` untuk gratis). |
+| `OPENROUTER_MODEL` | `meta-llama/llama-3.3-70b-instruct:free` | Model OpenRouter |
+| `OPENROUTER_MAX_TOKENS` | `1024` | Batas token jawaban OpenRouter |
+| `ANTHROPIC_API_KEY` | — | API key Anthropic Claude (opsional, cadangan). |
+| `ANTHROPIC_MODEL` | `claude-sonnet-5` | Model Anthropic |
+| `ANTHROPIC_MAX_TOKENS` | `1024` | Batas token jawaban Anthropic |
+| `SUMOPOD_API_KEY` | — | API key SumoPod `sk-...` (opsional, cadangan). |
+| `SUMOPOD_MODEL` | `claude-sonnet-4-6` | Model SumoPod |
+| `SUMOPOD_MAX_TOKENS` | `1024` | Batas token jawaban SumoPod |
+| `AI_CLOUD_PROVIDERS` | `gemini,groq,openrouter,anthropic,sumopod` | Urutan chain provider cloud. Provider tanpa API key otomatis di-skip. |
+| `AI_CLOUD_COOLDOWN_MS` | `60000` | Cooldown (ms) provider yang kena limit kuota sebelum dicoba lagi |
+| `AI_TIMEOUT_MS` | `8000` | Timeout request per provider cloud (ms) |
+| `AI_DEFAULT_LEVEL` | `standard` | Level default per-chat: `standard` (Ollama + fallback) atau `cloud` |
 | `WHITELIST_GROUP_IDS` | — | ID grup yang diizinkan, pisahkan koma. Isi `*` untuk semua group (tidak disarankan). |
+| `ADMIN_NUMBERS` | — | Nomor admin (pisahkan koma). Kosong = belum ada admin. Contoh `6281234567890`. |
+| `FAMILY_MEMBERS` | — | Daftar nomor anggota keluarga. Kosong = semua orang di group whitelist dianggap anggota. |
 | `AUTO_RECAP_ENABLED` | `false` | Aktifkan rekap otomatis |
 | `AUTO_RECAP_CRON` | `0 21 * * *` | Jadwal rekap harian (jam 21:00) |
 | `ASSISTANT_TRIGGER_WORD` | `@kacan` | Trigger word asisten |
 | `ASSISTANT_TRIGGER_PREFIXES` | `!ai,!tanya` | Prefix alternatif |
-| `CONVERSATION_MEMORY_LIMIT` | `20` | Sliding window konteks percakapan |
+| `CONVERSATION_MEMORY_LIMIT` | `20` | Sliding window konteks percakapan grup |
+| `PERSONAL_MEMORY_LIMIT` | `20` | Sliding window histori pribadi per nomor |
 | `ASSISTANT_RATE_LIMIT_SECONDS` | `5` | Rate limit per grup |
+| `HEALTH_CHECK_ENABLED` | `true` | Notifikasi admin saat koneksi turun |
+| `HEALTH_CHECK_INTERVAL_MIN` | `5` | Interval cek kesehatan |
+| `LOG_DIR` | `./logs` | Folder log (rotasi harian) |
+| `LOG_LEVEL` | `info` | Level log |
+| `WEATHER_LAT` / `WEATHER_LON` | — | Koordinat untuk `!cuaca` |
+| `PRAYER_CITY` | — | Kota untuk `!sholat` (contoh: `Jakarta`) |
+| `BOT_NAME` | `Kacan` | Nama bot (kepribadian di `src/prompts/personality.js`) |
 | `DB_PATH` | `./data/chat_history.db` | Lokasi SQLite |
 | `PRUNE_DAYS` | `30` | Hapus histori lebih tua dari N hari |
 
 ## Struktur Data
 
 - `auth_session/` — kredensial sesi WhatsApp (jangan di-commit, jangan di-share).
-- `data/chat_history.db` — SQLite: tabel `messages` (histori semua chat) & `conversation_memory` (memori percakapan asisten).
-- Kedua folder di-mount sebagai volume, jadi persist saat container rebuild.
+- `data/chat_history.db` — SQLite: tabel `messages`, `conversation_memory`, `members`, `member_history`, `shared_context`, `reminders`, `shopping_list`, `expenses`, `settings`.
+- `logs/` — log harian (rotasi otomatis).
+- Kedua folder `auth_session/` dan `data/` di-mount sebagai volume, jadi persist saat container rebuild.
 
 ## Troubleshooting
 

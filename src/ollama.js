@@ -1,24 +1,8 @@
 import { format } from 'node:util';
+import { PERSONALITY_SYSTEM_PROMPT, RECAP_SYSTEM_PROMPT } from './prompts/personality.js';
 
 let config;
 let logger;
-
-const RECAP_SYSTEM_PROMPT = `Kamu adalah asisten yang membuat rekap ringkas dari percakapan grup WhatsApp.
-Tugasmu:
-- Rangkum topik-topik utama yang dibahas.
-- Sebutkan poin-poin penting/keputusan/tugas yang muncul (jika ada).
-- Gunakan format list yang rapi, bahasa Indonesia santai tapi jelas.
-- Jangan mengarang informasi yang tidak ada di percakapan.
-- Jika chat berisi data/angka (misal laporan penjualan, rekap kegiatan), tampilkan sebagai ringkasan terstruktur.`;
-
-const ASSISTANT_SYSTEM_PROMPT = `Kamu adalah asisten AI yang aktif membantu di dalam grup WhatsApp ini.
-Tugasmu:
-- Jawab pertanyaan anggota grup dengan jelas, ringkas, dan akurat.
-- Bantu analisis data/angka yang dibagikan di grup jika diminta.
-- Kalau pertanyaan butuh konteks dari chat sebelumnya di grup ini, gunakan konteks yang diberikan.
-- Sebutkan nama pengirim jika relevan untuk menjawab secara personal (mis. "Untuk [nama], ...").
-- Jawab dalam bahasa Indonesia, gaya santai tapi informatif, jangan bertele-tele.
-- Kalau tidak tahu jawabannya atau informasinya tidak ada di konteks, katakan terus terang, jangan mengarang.`;
 
 export function initOllama(env, log) {
   config = {
@@ -64,12 +48,13 @@ export async function generateRecap(chatHistoryText) {
   return chat(messages);
 }
 
-export async function generateAssistantReply(question, conversationHistory) {
+export async function generateAssistantReply(question, conversationHistory, senderName = '') {
+  const greeting = senderName ? `\n(Pengirim pesan ini bernama ${senderName}. Sambut/sebut namanya kalau wajar.)` : '';
   const contextBlock = conversationHistory.length
     ? `\n\nKonteks percakapan terakhir di grup ini:\n${conversationHistory}\n`
     : '';
   const messages = [
-    { role: 'system', content: ASSISTANT_SYSTEM_PROMPT },
+    { role: 'system', content: PERSONALITY_SYSTEM_PROMPT + greeting },
     { role: 'user', content: `${question}${contextBlock}` },
   ];
   return chat(messages);

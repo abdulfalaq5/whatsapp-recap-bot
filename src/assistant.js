@@ -1,5 +1,5 @@
 import * as storage from './storage.js';
-import * as ollama from './ollama.js';
+import { askAI, aiErrorHint } from './ai.js';
 import { formatChatHistory } from './commands.js';
 
 // Rate limit per grup: max 1 request tiap N detik
@@ -27,6 +27,16 @@ function buildConversationText(turns, memoryLimit) {
     .join('\n');
 }
 
+function buildPersonalHistoryText(rows) {
+  return rows
+    .map((t) => (t.role === 'assistant' ? `Asisten: ${t.content}` : `Kamu (${t.name || 'User'}): ${t.content}`))
+    .join('\n');
+}
+
+function buildSharedContextText(rows) {
+  return rows.map((r) => `• ${r.content}`).join('\n');
+}
+
 function shouldAttachGroupContext(question) {
   return RECAP_KEYWORDS.test(question);
 }
@@ -40,7 +50,8 @@ async function getRecentGroupContext(groupId, minutes = 180) {
 
 export async function handleAssistant(sock, logger, config, message) {
   const groupId = message.key.remoteJid;
-  const senderName = message.pushName || 'User';
+  const senderName = message.senderName || message.pushName || 'User';
+  const senderNumber = message.senderNumber || '';
 
   if (!rateLimitOk(groupId, Number(config.ASSISTANT_RATE_LIMIT_SECONDS || 5))) {
     logger.info({ groupId }, 'Assistant rate limited, skipping');
@@ -56,23 +67,42 @@ export async function handleAssistant(sock, logger, config, message) {
     groupContext = await getRecentGroupContext(groupId);
   }
 
+  // Memory per-nomor + shared context keluarga
+  const personalHistory = senderNumber
+    ? buildPersonalHistoryText(storage.getRecentMemberHistory(senderNumber, Number(config.PERSONAL_MEMORY_LIMIT || 20)))
+    : '';
+  const shared = storage.getSharedContext();
+  const sharedText = shared.length ? buildSharedContextText(shared) : '';
+
   const contextParts = [];
+  if (sharedText) contextParts.push(`Konteks keluarga bersama (agenda/pengumuman):\n${sharedText}`);
+  if (personalHistory) contextParts.push(`Riwayat obrolan pribadi kamu dengan asisten (${senderName}):\n${personalHistory}`);
   if (groupContext) contextParts.push(`Obrolan grup terbaru (${groupContext.split('\n').length} baris):\n${groupContext}`);
   const fullContext = contextParts.join('\n\n');
 
-  logger.info({ groupId, question: message.text, withContext: !!fullContext }, 'Assistant request');
+  logger.info({ groupId, question: message.text, hasPersonal: !!personalHistory, hasShared: !!sharedText }, 'Assistant request');
 
   try {
-    const reply = await ollama.generateAssistantReply(message.text, fullContext || conversationText);
+    const reply = await askAI({
+      chatId: groupId,
+      question: message.text,
+      context: fullContext || conversationText,
+      senderName,
+      senderNumber,
+    });
     const now = Date.now();
 
     storage.saveConversationTurn({ groupId, role: 'user', senderName, content: message.text, timestamp: now });
     storage.saveConversationTurn({ groupId, role: 'assistant', senderName: null, content: reply, timestamp: now });
+    if (senderNumber) {
+      storage.saveMemberTurn({ number: senderNumber, name: senderName, role: 'user', content: message.text, timestamp: now });
+      storage.saveMemberTurn({ number: senderNumber, name: null, role: 'assistant', content: reply, timestamp: now });
+    }
 
     await sock.sendMessage(groupId, { text: reply }, { quoted: message.original });
     logger.info({ groupId }, 'Assistant reply sent');
   } catch (err) {
     logger.error({ err }, 'Assistant generation failed');
-    await sock.sendMessage(groupId, { text: ollama.ollamaErrorHint(err) });
+    await sock.sendMessage(groupId, { text: aiErrorHint(err) });
   }
 }

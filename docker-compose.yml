@@ -8,6 +8,8 @@ services:
     volumes:
       - ./auth_session:/app/auth_session
       - ./data:/app/data
+      # Monitor baterai server: biarkan container membaca baterai laptop host (read-only)
+      - /sys/class/power_supply:/sys/class/power_supply:ro
     extra_hosts:
       # Supaya container bisa akses Ollama yang jalan di host (Linux perlu ini secara eksplisit)
       - "host.docker.internal:host-gateway"

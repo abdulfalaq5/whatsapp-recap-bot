@@ -17,6 +17,7 @@
     "dotenv": "^16",
     "node-cron": "^3",
     "pino": "^9",
+    "pino-roll": "^4.0.0",
     "qrcode-terminal": "^0.12"
   }
 }
