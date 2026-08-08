@@ -11,6 +11,7 @@ import { handleAdminCommand } from './admin.js';
 import { handleVoiceNote } from './voice.js';
 import { handleReminderCommand } from './reminders.js';
 import { handleShoppingCommand } from './shopping.js';
+import { handleSearchImage, handleGenerateImage } from './imageCommands.js';
 import { getWeather, getPrayerTimes } from './info.js';
 
 let config;
@@ -202,6 +203,12 @@ async function handleIncomingMessage(sock, msg) {
           await sock.sendMessage(groupId, { text: `Gagal ambil jadwal sholat: ${err.message}`, quoted: msg });
         }
         break;
+      case 'image-search':
+        await handleSearchImage(sock, logger, config, { msg, groupId, senderNumber, arg: parsed.arg });
+        break;
+      case 'image-generate':
+        await handleGenerateImage(sock, logger, config, { msg, groupId, senderNumber, arg: parsed.arg });
+        break;
       case 'admin':
         await handleAdminCommand(sock, logger, config, { msg, groupId, senderNumber, arg: parsed.arg });
         break;
@@ -241,6 +248,12 @@ async function handleDirectMessage(sock, msg, senderNumber, senderName, text) {
         break;
       case 'admin':
         await handleAdminCommand(sock, logger, config, { msg, groupId: jid, senderNumber, arg: parsed.arg });
+        break;
+      case 'image-search':
+        await handleSearchImage(sock, logger, config, { msg, groupId: jid, senderNumber, arg: parsed.arg });
+        break;
+      case 'image-generate':
+        await handleGenerateImage(sock, logger, config, { msg, groupId: jid, senderNumber, arg: parsed.arg });
         break;
       default:
         break;

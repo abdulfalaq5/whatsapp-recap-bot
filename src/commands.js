@@ -1,6 +1,7 @@
 import * as storage from './storage.js';
 import * as ai from './ai.js';
 import * as expenses from './expenses.js';
+import { handleSearchImage, handleGenerateImage } from './imageCommands.js';
 
 export const HELP_TEXT = `Command yang tersedia:
 • @kacan <pertanyaan> - panggil asisten AI (tulis di mana saja dalam pesan)
@@ -17,6 +18,7 @@ export const HELP_TEXT = `Command yang tersedia:
 • 🛒 !belanja tambah <item> | !belanja list | !belanja selesai <item>
 • 💸 !catat <jumlah> <catatan> | !rekap bulan ini | !export
 • 🌤️ !cuaca | 🕌 !sholat
+• 🖼️ !carigambar <kata kunci> | 🎨 !buatgambar <deskripsi>
 • @kacan help / !help / !bantuan - tampilkan daftar command
 Admin: !restart | !log | !broadcast <pesan> | !tambahmember <nomor> <nama> | !reset semua`;
 
@@ -96,6 +98,14 @@ export function parseMessage(text, config) {
   // Info cepat
   if (lower.startsWith('!cuaca')) return { kind: 'weather', arg: '' };
   if (lower.startsWith('!sholat')) return { kind: 'prayer', arg: '' };
+
+  // Gambar: cari dari internet / generate dengan AI
+  if (lower.startsWith('!carigambar')) {
+    return { kind: 'image-search', arg: t.slice('!carigambar'.length).trim() };
+  }
+  if (lower.startsWith('!buatgambar')) {
+    return { kind: 'image-generate', arg: t.slice('!buatgambar'.length).trim() };
+  }
 
   // Rekap chat (tetap backward-compatible). "!rekap bulan ini" → rekap pengeluaran.
   if (lower.startsWith('!rekap')) {

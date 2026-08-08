@@ -81,6 +81,8 @@ Bot kini menampilkan **semua** ID group yang mengirim pesan ke log, walau belum 
 | `!export` | Export pengeluaran bulan ini ke file CSV |
 | `!cuaca` | Info cuaca hari ini (Open-Meteo) — kalau ditanya lewat `@kacan` (soal cuaca/prakiraan besok), asisten juga pakai data cuaca asli yang sama |
 | `!sholat` | Jadwal sholat hari ini (Aladhan) |
+| `!carigambar <kata kunci>` | Cari gambar dari internet (fallback: Google → Unsplash → Pexels → Pixabay) |
+| `!buatgambar <deskripsi>` | Buat gambar dengan AI (fallback: Pollinations.ai → Cloudflare Workers AI) |
 | `@kacan help` / `!help` / `!bantuan` | Daftar semua command beserta fungsinya (bisa juga `@kacan menu`, `!ai help`) |
 
 **Command admin (nomor di `ADMIN_NUMBERS`):**
@@ -137,6 +139,15 @@ Catatan: bot hanya merespons saat ada trigger (`@kacan`/`!ai`/`!tanya`) atau com
 | `LOG_LEVEL` | `info` | Level log |
 | `WEATHER_LAT` / `WEATHER_LON` | — | Koordinat untuk `!cuaca` |
 | `PRAYER_CITY` | — | Kota untuk `!sholat` (contoh: `Jakarta`) |
+| `GOOGLE_CSE_API_KEY` / `GOOGLE_CSE_ENGINE_ID` | — | Google Custom Search (image) untuk `!carigambar`. Kosong = dilewati. |
+| `UNSPLASH_ACCESS_KEY` | — | API key Unsplash (fallback `!carigambar`). Kosong = dilewati. |
+| `PEXELS_API_KEY` | — | API key Pexels (fallback `!carigambar`). Kosong = dilewati. |
+| `PIXABAY_API_KEY` | — | API key Pixabay (fallback `!carigambar`). Kosong = dilewati. |
+| `POLLINATIONS_BASE_URL` | `https://image.pollinations.ai/prompt` | Endpoint generate gambar `!buatgambar` (tanpa API key) |
+| `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` | — | Cloudflare Workers AI (fallback `!buatgambar`). Kosong = dilewati. |
+| `CLOUDFLARE_MODEL` | `@cf/black-forest-labs/flux-1-schnell` | Model Cloudflare Workers AI |
+| `IMAGE_DOWNLOAD_DIR` | `./Download` | Folder simpan gambar hasil cari/generate |
+| `AUTO_DELETE_DOWNLOAD` | `false` | `true` = hapus file gambar setelah dikirim ke WhatsApp |
 | `BOT_NAME` | `Kacan` | Nama bot (kepribadian di `src/prompts/personality.js`) |
 | `DB_PATH` | `./data/chat_history.db` | Lokasi SQLite |
 | `PRUNE_DAYS` | `30` | Hapus histori lebih tua dari N hari |
@@ -146,7 +157,8 @@ Catatan: bot hanya merespons saat ada trigger (`@kacan`/`!ai`/`!tanya`) atau com
 - `auth_session/` — kredensial sesi WhatsApp (jangan di-commit, jangan di-share).
 - `data/chat_history.db` — SQLite: tabel `messages`, `conversation_memory`, `members`, `member_history`, `shared_context`, `reminders`, `shopping_list`, `expenses`, `settings`.
 - `logs/` — log harian (rotasi otomatis).
-- Kedua folder `auth_session/` dan `data/` di-mount sebagai volume, jadi persist saat container rebuild.
+- `Download/` — gambar hasil `!carigambar` / `!buatgambar` (di-mount sebagai volume, jadi persist saat container rebuild).
+- Folder `auth_session/`, `data/`, dan `Download/` di-mount sebagai volume, jadi persist saat container rebuild.
 
 ## Troubleshooting
 

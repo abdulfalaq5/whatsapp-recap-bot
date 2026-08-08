@@ -8,6 +8,7 @@ services:
     volumes:
       - ./auth_session:/app/auth_session
       - ./data:/app/data
+      - ./Download:/app/Download
       # Monitor baterai server: biarkan container membaca baterai laptop host (read-only)
       - /sys/class/power_supply:/sys/class/power_supply:ro
     extra_hosts:
