@@ -1,12 +1,16 @@
 import * as storage from './storage.js';
 import { askAI, aiErrorHint } from './ai.js';
 import { formatChatHistory } from './commands.js';
+import { getWeatherForecast } from './info.js';
 
 // Rate limit per grup: max 1 request tiap N detik
 const lastReplyAt = new Map();
 
 // Kata kunci yang menandakan pertanyaan menyinggung obrolan grup
 const RECAP_KEYWORDS = /rekap|kemarin|tadi|barusan|tadi dibahas|dibahas|obrolan|chat|pesan|cek/i;
+
+// Kata kunci pertanyaan cuaca → asisten suntik data cuaca asli (Open-Meteo)
+const WEATHER_KEYWORDS = /cuaca|hujan|panas|dingin|suhu|berap[a]?[^\s]*derajat|angin|kelembapan|berawan|mendung|cerah|badai|petir|prakiraan|perkiraan|forecast/i;
 
 function rateLimitOk(groupId, seconds) {
   if (!seconds || seconds <= 0) return true;
@@ -39,6 +43,19 @@ function buildSharedContextText(rows) {
 
 function shouldAttachGroupContext(question) {
   return RECAP_KEYWORDS.test(question);
+}
+
+// Ambil data cuaca asli (Open-Meteo) kalau pertanyaan soal cuaca.
+// Gagal (misal WEATHER_LAT/LON belum diisi atau offline) → dikembalikan kosong,
+// biar asisten tetap jalan tanpa data cuaca.
+async function maybeAttachWeather(question) {
+  if (!WEATHER_KEYWORDS.test(question)) return '';
+  try {
+    const data = await getWeatherForecast();
+    return `Data cuaca (akurat dari Open-Meteo):\n${data}`;
+  } catch (err) {
+    return '';
+  }
 }
 
 async function getRecentGroupContext(groupId, minutes = 180) {
@@ -78,6 +95,8 @@ export async function handleAssistant(sock, logger, config, message) {
   if (sharedText) contextParts.push(`Konteks keluarga bersama (agenda/pengumuman):\n${sharedText}`);
   if (personalHistory) contextParts.push(`Riwayat obrolan pribadi kamu dengan asisten (${senderName}):\n${personalHistory}`);
   if (groupContext) contextParts.push(`Obrolan grup terbaru (${groupContext.split('\n').length} baris):\n${groupContext}`);
+  const weatherData = await maybeAttachWeather(message.text);
+  if (weatherData) contextParts.push(weatherData);
   const fullContext = contextParts.join('\n\n');
 
   logger.info({ groupId, question: message.text, hasPersonal: !!personalHistory, hasShared: !!sharedText }, 'Assistant request');

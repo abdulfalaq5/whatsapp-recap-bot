@@ -55,6 +55,7 @@ export function initAI(env, log) {
     ollamaTimeoutMs: Number(env.OLLAMA_TIMEOUT_MS || 60000),
     timeoutMs: Number(env.AI_TIMEOUT_MS || 60000),
     cloudCooldownMs: Number(env.AI_CLOUD_COOLDOWN_MS || 60000),
+    contextMaxChars: Number(env.AI_CONTEXT_MAX_CHARS || 8000),
     defaultLevel: env.AI_DEFAULT_LEVEL === 'cloud' ? 'cloud' : 'standard',
   };
   logger = log;
@@ -74,6 +75,7 @@ export function initAI(env, log) {
       ollamaTimeoutMs: config.ollamaTimeoutMs,
       cloudTimeoutMs: config.timeoutMs,
       cloudCooldownMs: config.cloudCooldownMs,
+      contextMaxChars: config.contextMaxChars,
       defaultLevel: config.defaultLevel,
     },
     'AI routing ready (Ollama lokal + multi-provider cloud fallback)',
@@ -103,56 +105,55 @@ export function withTimeout(promise, ms, label = 'AI request') {
   });
 }
 
-// Bangun system prompt + prompt user yang sama untuk semua provider cloud.
-function buildPrompt({ question, context = '', senderName = '', senderNumber = '' }) {
-  const identity = [
-    senderName ? `Nama: ${senderName}` : '',
-    senderNumber ? `Nomor WhatsApp: ${senderNumber}` : '',
-  ].filter(Boolean).join(', ');
-  const greeting = identity
-    ? `\n(Pengirim pesan ini adalah ${identity}. Panggil/sapa dia dengan nama itu, jangan menebak atau memakai nama lain, meskipun di riwayat percakapan ada nama lain. Sebut nomornya juga bila wajar.)`
+// Potong konteks yang terlalu panjang: simpan bagian paling baru (biasanya paling relevan).
+function limitContext(text) {
+  if (!text) return '';
+  const s = String(text);
+  if (s.length <= config.contextMaxChars) return s;
+  return `...(riwayat panjang, bagian sebelumnya dipangkas — hanya ditampilkan yang terbaru)...\n${s.slice(-config.contextMaxChars)}`;
+}
+
+// Bangun system prompt bersama untuk semua provider (cloud + Ollama).
+// - Hanya NAMA pengirim yang dikirim ke model (nomor WhatsApp TIDAK dikirim —
+//   mencegah model menebak/mengomentari nomor).
+// - Konteks = referensi TAMBAHAN (opsional). Model TETAP boleh jawab dari
+//   pengetahuan umum kalau konteks tidak relevan (sebelumnya terlalu kaku sampai
+//   menolak pertanyaan umum seperti "info Gunung Merapi").
+// - Ada aturan jawaban eksplisit: sapa singkat → jawab langsung, tanpa basa-basi.
+function buildSystemPrompt({ context = '', senderName = '' }) {
+  const greeting = senderName
+    ? `\n(Pengirim pesan ini bernama ${senderName}. Panggil/sapa dia dengan nama itu. Jangan menebak nama lain meskipun di riwayat percakapan ada nama lain.)`
     : '';
-  const contextBlock = context ? `\n\nKonteks percakapan terakhir di grup ini:\n${context}\n` : '';
-  const identityNote = identity
-    ? `\n[Identitas pengirim saat ini: ${identity} — gunakan ini, bukan nama dari riwayat.]\n`
-    : '';
+
+  let system = PERSONALITY_SYSTEM_PROMPT + greeting;
+
+  if (context) {
+    system += `\n\nBerikut konteks percakapan masa lalu sebagai referensi TAMBAHAN (tidak wajib dipakai):\n${limitContext(context)}`;
+  }
+
+  system += `\n\nAturan menjawab:\n- Awali jawaban dengan sapaan singkat ke nama pengirim saja (misal "Halo, Falaq!"), lalu langsung jawab pertanyaannya.\n- Kalau konteks di atas relevan dengan pertanyaan, gunakan isinya. Kalau tidak relevan, jawab saja berdasarkan pengetahuan umummu.\n- Jawab ringkas dan langsung, tanpa basa-basi, tanpa komentar tentang percakapan, tanpa mengulang pertanyaan.\n- Jangan menyebut atau mengomentari nomor WhatsApp siapapun.`;
+  return system;
+}
+
+// Bangun { system, prompt } untuk semua provider cloud.
+function buildPrompt({ question, context = '', senderName = '' }) {
   return {
-    system: PERSONALITY_SYSTEM_PROMPT + greeting,
-    prompt: `${identityNote}${question}${contextBlock}`,
+    system: buildSystemPrompt({ context, senderName }),
+    prompt: question,
   };
 }
 
-// Struktur prompt khusus Ollama (model kecil lebih mudah "nyasar" kalau konteks
-// panjang ditaruh setelah pertanyaan). Aturannya:
-//  - konteks = hanya referensi, jelas dibilang JANGAN dijawab,
-//  - pertanyaan ditaruh PALING AKHIR + instruksi tegas "jawab HANYA pertanyaan ini",
+// Struktur prompt khusus Ollama (model kecil mudah "nyasar" kalau konteks panjang
+// ditaruh bersama pertanyaan — baris mirip pertanyaan di dalam konteks bikin model
+// bingung mana yang harus dijawab). Aturannya:
+//  - konteks ditaruh di SYSTEM PROMPT sebagai referensi,
+//  - pesan user berisi HANYA pertanyaan → model tidak bingung lagi,
 //  - pakai /api/chat supaya template chat model (qwen2.5 dll) diterapkan dengan benar.
-function buildOllamaMessages({ question, context = '', senderName = '', senderNumber = '' }) {
-  const identity = [
-    senderName ? `Nama: ${senderName}` : '',
-    senderNumber ? `Nomor WhatsApp: ${senderNumber}` : '',
-  ].filter(Boolean).join(', ');
-  const greeting = identity
-    ? `\n(Pengirim pesan ini adalah ${identity}. Panggil/sapa dia dengan nama itu, jangan menebak atau memakai nama lain, meskipun di riwayat percakapan ada nama lain. Sebut nomornya juga bila wajar.)`
-    : '';
-
-  const parts = [];
-  if (context) {
-    parts.push(
-      'Konteks percakapan grup di bawah ini HANYA referensi tambahan. Jangan menjawab atau merangkum konteks itu sendiri; gunakan hanya kalau relevan dengan pertanyaan.',
-      context,
-    );
-  }
-  parts.push(
-    identity ? `Pertanyaan dari ${identity}:` : 'Pertanyaan:',
-    question,
-    'Instruksi: jawab HANYA pertanyaan di atas dengan ringkas dan langsung. Kalau konteks tidak relevan, abaikan saja. Jangan mengarang atau menambah jawaban yang tidak ditanyakan.',
-  );
-
+function buildOllamaMessages({ question, context = '', senderName = '' }) {
   return {
     messages: [
-      { role: 'system', content: PERSONALITY_SYSTEM_PROMPT + greeting },
-      { role: 'user', content: parts.join('\n\n') },
+      { role: 'system', content: buildSystemPrompt({ context, senderName }) },
+      { role: 'user', content: question },
     ],
   };
 }
@@ -418,6 +419,8 @@ export function setLevel(chatId, level) {
 // Fallback tidak mengubah state (setLevel tidak pernah dipanggil di sini).
 export async function askAI({ chatId, question, context = '', senderName = '', senderNumber = '' }) {
   const level = getLevel(chatId);
+  // Cloud pakai format { system, prompt } dari buildPrompt;
+  // Ollama pakai param mentah supaya buildOllamaMessages bisa menyusun prompt khusus.
   const payload = buildPrompt({ question, context, senderName, senderNumber });
 
   if (level === 'cloud') {
@@ -427,7 +430,11 @@ export async function askAI({ chatId, question, context = '', senderName = '', s
   }
 
   try {
-    const reply = await withTimeout(callOllama(payload), config.ollamaTimeoutMs, 'Ollama');
+    const reply = await withTimeout(
+      callOllama({ question, context, senderName, senderNumber }),
+      config.ollamaTimeoutMs,
+      'Ollama',
+    );
     logger.info({ chatId, level, provider: 'ollama' }, 'AI reply via Ollama');
     return reply;
   } catch (err) {

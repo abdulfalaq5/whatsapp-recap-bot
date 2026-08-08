@@ -79,9 +79,9 @@ Bot kini menampilkan **semua** ID group yang mengirim pesan ke log, walau belum 
 | `!catat <jumlah> <catatan>` | Catat pengeluaran, contoh: `!catat 50000 belanja bulanan` |
 | `!rekap bulan ini` | Rekap pengeluaran bulan ini per kategori |
 | `!export` | Export pengeluaran bulan ini ke file CSV |
-| `!cuaca` | Info cuaca hari ini (Open-Meteo) |
+| `!cuaca` | Info cuaca hari ini (Open-Meteo) — kalau ditanya lewat `@kacan` (soal cuaca/prakiraan besok), asisten juga pakai data cuaca asli yang sama |
 | `!sholat` | Jadwal sholat hari ini (Aladhan) |
-| `!help` / `!bantuan` | Daftar command |
+| `@kacan help` / `!help` / `!bantuan` | Daftar semua command beserta fungsinya (bisa juga `@kacan menu`, `!ai help`) |
 
 **Command admin (nomor di `ADMIN_NUMBERS`):**
 | Command | Aksi |
@@ -118,6 +118,7 @@ Catatan: bot hanya merespons saat ada trigger (`@kacan`/`!ai`/`!tanya`) atau com
 | `SUMOPOD_MAX_TOKENS` | `1024` | Batas token jawaban SumoPod |
 | `AI_CLOUD_PROVIDERS` | `gemini,groq,openrouter,anthropic,sumopod` | Urutan chain provider cloud. Provider tanpa API key otomatis di-skip. |
 | `AI_CLOUD_COOLDOWN_MS` | `60000` | Cooldown (ms) provider yang kena limit kuota sebelum dicoba lagi |
+| `AI_CONTEXT_MAX_CHARS` | `8000` | Batas panjang konteks yang dikirim ke model (lebih pendek = jawaban fokus/tidak campur) |
 | `AI_TIMEOUT_MS` | `8000` | Timeout request per provider cloud (ms) |
 | `AI_DEFAULT_LEVEL` | `standard` | Level default per-chat: `standard` (Ollama + fallback) atau `cloud` |
 | `WHITELIST_GROUP_IDS` | — | ID grup yang diizinkan, pisahkan koma. Isi `*` untuk semua group (tidak disarankan). |

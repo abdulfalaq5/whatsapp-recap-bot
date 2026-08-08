@@ -17,7 +17,7 @@ export const HELP_TEXT = `Command yang tersedia:
 • 🛒 !belanja tambah <item> | !belanja list | !belanja selesai <item>
 • 💸 !catat <jumlah> <catatan> | !rekap bulan ini | !export
 • 🌤️ !cuaca | 🕌 !sholat
-• !help / !bantuan - tampilkan command ini
+• @kacan help / !help / !bantuan - tampilkan daftar command
 Admin: !restart | !log | !broadcast <pesan> | !tambahmember <nomor> <nama> | !reset semua`;
 
 function stripPrefix(text, prefixes) {
@@ -25,6 +25,11 @@ function stripPrefix(text, prefixes) {
     if (text.startsWith(p)) return text.slice(p.length).trim();
   }
   return null;
+}
+
+// "help"/"bantuan" setelah trigger (misal "@kacan help", "!ai help") → tampilkan daftar command.
+function isHelpRequest(s) {
+  return /^(help|bantuan|menu|command|commands|list\s*command|daftar\s*(?:perintah|command))$/i.test(String(s || '').trim());
 }
 
 // Command level AI ("@kacan naikan level mu", "standarkan level", "status level").
@@ -108,6 +113,7 @@ export function parseMessage(text, config) {
 
   const viaPrefix = stripPrefix(t, aiPrefixes);
   if (viaPrefix !== null) {
+    if (isHelpRequest(viaPrefix)) return { kind: 'help' };
     return { kind: 'assistant', question: viaPrefix };
   }
 
@@ -120,6 +126,7 @@ export function parseMessage(text, config) {
   if (lower.includes(triggerWord)) {
     // buang trigger word dari isi pertanyaan (di mana pun posisinya, case-insensitive)
     const question = t.replace(new RegExp(triggerWord, 'gi'), '').trim();
+    if (isHelpRequest(question)) return { kind: 'help' };
     return { kind: 'assistant', question };
   }
 
