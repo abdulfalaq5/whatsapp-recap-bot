@@ -27,7 +27,7 @@ function parseJsonLoose(raw) {
 }
 
 export async function parseReminderText(text, logger) {
-  const today = new Date().toLocaleString('id-ID', { dateStyle: 'full', timeZone: process.env.TZ || undefined });
+  const today = new Date().toLocaleString('id-ID', { dateStyle: 'full', timeZone: process.env.TZ || 'Asia/Jakarta' });
   const messages = [
     { role: 'system', content: PARSE_SYSTEM_PROMPT.replace('{today}', today) },
     { role: 'user', content: text },

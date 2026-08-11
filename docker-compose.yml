@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      TZ: Asia/Jakarta
     volumes:
       - ./auth_session:/app/auth_session
       - ./data:/app/data
