@@ -19,6 +19,8 @@ export const HELP_TEXT = `Command yang tersedia:
 • 💸 !catat <jumlah> <catatan> | !rekap bulan ini | !export
 • 🌤️ !cuaca | 🕌 !sholat
 • 🖼️ !carigambar <kata kunci> | 🎨 !buatgambar <deskripsi>
+• 📸 Kirim gambar + caption "@kacan <pertanyaan>" - asisten baca isi gambarnya
+• 🧾 Kirim foto struk + caption "@kacan tolong catat harga ini" - asisten baca struk, minta konfirmasi (ya/batal) sebelum disimpan ke pengeluaran
 • @kacan help / !help / !bantuan - tampilkan daftar command
 • 🔎 !cari <topik> - cari info di internet sekarang (selalu pakai Tavily)
 • @kacan tambahkan group id ini untuk akses kamu - daftarkan group ini (khusus admin)

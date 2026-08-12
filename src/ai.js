@@ -35,7 +35,7 @@ export function initAI(env, log) {
       },
       gemini: {
         apiKey: env.GEMINI_API_KEY || '',
-        model: env.GEMINI_MODEL || 'gemini-2.0-flash',
+        model: env.GEMINI_MODEL || 'gemini-flash-latest',
         maxTokens: Number(env.GEMINI_MAX_TOKENS || 1024),
         baseUrl: (env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, ''),
       },
@@ -209,6 +209,36 @@ export async function callGemini({ system, prompt }) {
     }),
   });
   if (!res.ok) throw await httpError('Gemini', res);
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('').trim() ?? '';
+}
+
+// Gemini vision: sama seperti callGemini, tapi kirim gambar (inline_data base64) juga.
+// Model default "gemini-flash-latest" (alias resmi Google, otomatis ikut versi flash
+// terbaru) — native multimodal, gratis lewat Google AI Studio free tier, tidak perlu
+// API key/model tambahan di luar yang sudah dipakai untuk chat teks.
+export async function callGeminiVision({ system, prompt, imageBase64, mimeType }) {
+  if (!config.cloud.gemini.apiKey) throw new Error('GEMINI_API_KEY is not set');
+  const url = `${config.cloud.gemini.baseUrl}/models/${config.cloud.gemini.model}:generateContent`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': config.cloud.gemini.apiKey,
+    },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: system }] },
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: prompt },
+          { inline_data: { mime_type: mimeType, data: imageBase64 } },
+        ],
+      }],
+      generationConfig: { maxOutputTokens: config.cloud.gemini.maxTokens },
+    }),
+  });
+  if (!res.ok) throw await httpError('Gemini Vision', res);
   const data = await res.json();
   return data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('').trim() ?? '';
 }
@@ -445,6 +475,66 @@ export async function askAI({ chatId, question, context = '', senderName = '', s
   }
 }
 
+// Analisis gambar (vision). Sengaja HANYA lewat Gemini (satu-satunya provider yang
+// sudah dikonfigurasi mendukung multimodal + gratis) — tidak fallback ke provider
+// cloud lain supaya tidak diam-diam lari ke provider berbayar.
+export async function analyzeImage({ chatId, question, imageBase64, mimeType, senderName = '' }) {
+  if (!config.cloud.gemini.apiKey) {
+    const err = new Error('GEMINI_API_KEY is not set, tidak ada provider vision gratis lain yang dikonfigurasi');
+    err.name = 'NoVisionProvider';
+    throw err;
+  }
+  const system = buildSystemPrompt({ senderName });
+  const reply = await withTimeout(
+    callGeminiVision({ system, prompt: question, imageBase64, mimeType }),
+    config.timeoutMs,
+    'Gemini Vision',
+  );
+  logger.info({ chatId, provider: 'gemini-vision' }, 'AI image reply via Gemini');
+  return reply;
+}
+
+const RECEIPT_PROMPT = `Ini foto struk/nota/kwitansi belanja. Baca dan ekstrak isinya.
+Balas HANYA dengan JSON valid (tanpa markdown, tanpa teks lain di luar JSON), struktur:
+{"total": <total belanja dalam rupiah, angka bulat tanpa titik/koma/simbol>, "toko": "<nama toko/merchant kalau terbaca, kalau tidak string kosong>", "catatan": "<ringkasan singkat barang yang dibeli, maks 10 kata>"}
+Kalau foto ini BUKAN struk/nota, atau totalnya tidak bisa dibaca dengan yakin, balas HANYA:
+{"error": "<alasan singkat kenapa gagal>"}`;
+
+// Baca struk belanja dari foto → JSON {total, toko, catatan} atau {error}.
+// Sama seperti analyzeImage: hanya lewat Gemini (gratis), tidak fallback ke provider berbayar.
+export async function extractReceiptData({ chatId, imageBase64, mimeType }) {
+  if (!config.cloud.gemini.apiKey) {
+    const err = new Error('GEMINI_API_KEY is not set, tidak ada provider vision gratis lain yang dikonfigurasi');
+    err.name = 'NoVisionProvider';
+    throw err;
+  }
+  const raw = await withTimeout(
+    callGeminiVision({ system: 'Kamu adalah asisten pembaca struk belanja yang teliti.', prompt: RECEIPT_PROMPT, imageBase64, mimeType }),
+    config.timeoutMs,
+    'Gemini Vision (receipt)',
+  );
+  logger.info({ chatId, provider: 'gemini-vision' }, 'Receipt image analyzed via Gemini');
+  const jsonText = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  let data;
+  try {
+    data = JSON.parse(jsonText);
+  } catch {
+    throw new Error(`Gemini Vision balas format tidak terduga: ${raw.slice(0, 200)}`);
+  }
+  if (data.error) {
+    const err = new Error(data.error);
+    err.name = 'ReceiptUnreadable';
+    throw err;
+  }
+  const total = Math.round(Number(data.total));
+  if (!Number.isFinite(total) || total <= 0) {
+    const err = new Error('Total belanja tidak terbaca dengan jelas di struk ini');
+    err.name = 'ReceiptUnreadable';
+    throw err;
+  }
+  return { total, toko: String(data.toko || '').trim(), catatan: String(data.catatan || '').trim() };
+}
+
 // Rekap: coba Ollama dulu, kalau gagal/timeout → chain cloud (RECAP prompt).
 export async function generateRecap(historyText) {
   const system = RECAP_SYSTEM_PROMPT;
@@ -528,6 +618,9 @@ export function aiErrorHint(err) {
   }
   if (cause === 'NoCloudProvider') {
     return 'Belum ada API key cloud yang di-set di .env (Gemini/Groq/OpenRouter/Anthropic/SumoPod), jadi fallback cloud tidak bisa jalan.';
+  }
+  if (cause === 'NoVisionProvider') {
+    return 'Fitur baca gambar butuh GEMINI_API_KEY di .env (satu-satunya provider vision gratis yang didukung). Belum di-set, jadi gambar tidak bisa dianalisis.';
   }
   if (cause === 'AllProvidersFailed') {
     return 'Semua provider cloud gagal (mungkin kuota/limit gratis habis semua). Tunggu cooldown, lalu coba lagi.';

@@ -1,4 +1,4 @@
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 import { readdir, rm } from 'fs/promises';
@@ -6,7 +6,8 @@ import * as storage from './storage.js';
 import * as access from './access.js';
 import { parseMessage, isAddGroupRequest, handleRekap, HELP_TEXT, handleExpenseAdd, handleExpenseRecap, handleExpenseExport } from './commands.js';
 import { handleAssistant } from './assistant.js';
-import { handleLevelCommand, askAI, aiErrorHint } from './ai.js';
+import { handleLevelCommand, askAI, analyzeImage, extractReceiptData, aiErrorHint } from './ai.js';
+import * as expenses from './expenses.js';
 import { handleAdminCommand } from './admin.js';
 import { handleVoiceNote } from './voice.js';
 import { handleReminderCommand } from './reminders.js';
@@ -21,6 +22,14 @@ let connectionState = 'connecting';
 
 const seenGroups = new Set();
 const RECONNECT_DELAY_MS = 5000;
+
+// Struk difoto → simpan sementara (in-memory) menunggu user konfirmasi sebelum insert DB.
+// Key: "<jid>:<senderNumber>". Hilang otomatis setelah EXPENSE_CONFIRM_TTL_MS.
+const pendingExpenseConfirm = new Map();
+const EXPENSE_CONFIRM_TTL_MS = 5 * 60 * 1000;
+const RECEIPT_KEYWORDS = /struk|nota|kwitansi|invoice|resi|bon\b|harga|belanja|pengeluaran|catat/i;
+const CONFIRM_YES = /^(ya|iya|yo|yoi|yup|yes|ok|oke|okay|sip|betul|benar|setuju|simpan|lanjut)\b/i;
+const CONFIRM_NO = /^(tidak|gak|ga\b|kagak|nggak|no|batal|cancel|skip|jangan)\b/i;
 
 // Reason yang berarti sesi tidak bisa dilanjutkan → jangan auto-reconnect (butuh QR ulang / intervensi admin).
 const NO_RECONNECT_REASONS = new Set([
@@ -133,8 +142,90 @@ async function handleWebSearchCommand(sock, logger, config, { msg, jid, query, s
   }
 }
 
+function getImageMessage(msg) {
+  return msg.message?.imageMessage || msg.message?.ephemeralMessage?.message?.imageMessage || null;
+}
+
+// Gambar dikirim + trigger kata ("@kacan", "!ai", dst) di caption → unduh gambar,
+// lempar ke Gemini vision (satu-satunya provider gratis yang didukung untuk baca gambar).
+async function handleImageQuestion(sock, logger, config, { msg, jid, question, senderName }) {
+  await sock.sendMessage(jid, { text: '🖼️ Menganalisis gambar...' });
+  try {
+    const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+    const mimeType = getImageMessage(msg)?.mimetype || 'image/jpeg';
+    const reply = await analyzeImage({
+      chatId: jid,
+      question: question || 'Apa isi gambar ini? Jelaskan singkat dan jelas.',
+      imageBase64: buffer.toString('base64'),
+      mimeType,
+      senderName,
+    });
+    await sock.sendMessage(jid, { text: reply, quoted: msg });
+  } catch (err) {
+    await sock.sendMessage(jid, { text: aiErrorHint(err), quoted: msg });
+  }
+}
+
 function getSenderNumber(msg) {
   return (msg.key.participant || msg.key.remoteJid || '').split('@')[0];
+}
+
+// Foto struk/nota + caption mengandung kata kunci harga/belanja → baca via Gemini vision,
+// TAPI belum langsung insert ke DB. Hasil scan ditaruh pending, minta konfirmasi user dulu.
+async function handleReceiptScan(sock, logger, { msg, jid, senderNumber, senderName }) {
+  await sock.sendMessage(jid, { text: '🧾 Membaca struk...' });
+  try {
+    const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+    const mimeType = getImageMessage(msg)?.mimetype || 'image/jpeg';
+    const { total, toko, catatan } = await extractReceiptData({ chatId: jid, imageBase64: buffer.toString('base64'), mimeType });
+
+    const note = [toko, catatan].filter(Boolean).join(' - ') || 'belanja (dari struk)';
+    const category = toko || catatan || 'Lainnya';
+    const key = `${jid}:${senderNumber}`;
+    pendingExpenseConfirm.set(key, { amount: total, category, note, expiresAt: Date.now() + EXPENSE_CONFIRM_TTL_MS });
+
+    const rupiah = total.toLocaleString('id-ID');
+    await sock.sendMessage(jid, {
+      text: `🧾 *Hasil scan struk*\nTotal: Rp ${rupiah}${toko ? `\nToko: ${toko}` : ''}${catatan ? `\nCatatan: ${catatan}` : ''}\n\nSimpan ke catatan pengeluaran? Balas *ya* untuk simpan, *batal* untuk buang. (berlaku 5 menit)`,
+      quoted: msg,
+    });
+  } catch (err) {
+    if (err.name === 'ReceiptUnreadable') {
+      await sock.sendMessage(jid, { text: `Maaf, struknya belum kebaca jelas (${err.message}). Coba foto ulang yang lebih terang/jelas, atau catat manual: !catat <jumlah> <catatan>`, quoted: msg });
+      return;
+    }
+    logger.error({ err }, 'Receipt scan failed');
+    await sock.sendMessage(jid, { text: aiErrorHint(err), quoted: msg });
+  }
+}
+
+// Cek apakah pesan ini balasan konfirmasi ("ya"/"batal") untuk struk yang baru di-scan.
+// Return true kalau sudah ditangani di sini (jangan lanjut ke parseMessage/command biasa).
+async function tryHandleExpenseConfirmReply(sock, logger, { jid, senderNumber, text, msg }) {
+  const key = `${jid}:${senderNumber}`;
+  const pending = pendingExpenseConfirm.get(key);
+  if (!pending) return false;
+
+  if (pending.expiresAt < Date.now()) {
+    pendingExpenseConfirm.delete(key);
+    return false;
+  }
+
+  const t = text.trim();
+  if (CONFIRM_YES.test(t)) {
+    pendingExpenseConfirm.delete(key);
+    expenses.addExpense({ number: senderNumber, amount: pending.amount, category: pending.category, note: pending.note });
+    logger.info({ senderNumber, amount: pending.amount }, 'Expense recorded via receipt scan confirm');
+    const rupiah = pending.amount.toLocaleString('id-ID');
+    await sock.sendMessage(jid, { text: `✅ Tersimpan: Rp ${rupiah} - ${pending.note}`, quoted: msg });
+    return true;
+  }
+  if (CONFIRM_NO.test(t)) {
+    pendingExpenseConfirm.delete(key);
+    await sock.sendMessage(jid, { text: '❌ Dibuang, tidak disimpan.', quoted: msg });
+    return true;
+  }
+  return false;
 }
 
 async function handleIncomingMessage(sock, msg) {
@@ -198,6 +289,9 @@ async function handleIncomingMessage(sock, msg) {
     return;
   }
 
+  // Balasan konfirmasi struk ("ya"/"batal") → tangani duluan, sebelum command biasa.
+  if (await tryHandleExpenseConfirmReply(sock, logger, { jid: groupId, senderNumber, text, msg })) return;
+
   const isBotMentioned = text.toLowerCase().includes(config.triggerWord);
 
   // Daftarkan otomatis supaya bot mengenal nama + nomor yang chat.
@@ -224,6 +318,14 @@ async function handleIncomingMessage(sock, msg) {
         break;
       case 'assistant': {
         const question = parsed.question;
+        if (getImageMessage(msg)) {
+          if (RECEIPT_KEYWORDS.test(question || '')) {
+            await handleReceiptScan(sock, logger, { msg, jid: groupId, senderNumber, senderName });
+          } else {
+            await handleImageQuestion(sock, logger, config, { msg, jid: groupId, question, senderName });
+          }
+          break;
+        }
         if (!question) {
           await sock.sendMessage(groupId, { text: 'Halo! Mau tanya apa? Contoh: @kacan apa itu inflasi?' }, { quoted: msg });
           return;
@@ -324,18 +426,30 @@ async function handleIncomingMessage(sock, msg) {
 }
 
 async function handleDirectMessage(sock, msg, senderNumber, senderName, text) {
+  const jid = msg.key.remoteJid;
+
+  // Balasan konfirmasi struk ("ya"/"batal") → tangani duluan, sebelum command biasa.
+  if (await tryHandleExpenseConfirmReply(sock, logger, { jid, senderNumber, text, msg })) return;
+
   const parsed = parseMessage(text, config);
   if (!parsed) return;
 
   logger.info({ kind: parsed.kind, senderNumber, senderName }, 'Direct message command processed');
 
-  const jid = msg.key.remoteJid;
   try {
     switch (parsed.kind) {
       case 'help':
         await sock.sendMessage(jid, { text: HELP_TEXT });
         break;
       case 'assistant':
+        if (getImageMessage(msg)) {
+          if (RECEIPT_KEYWORDS.test(parsed.question || '')) {
+            await handleReceiptScan(sock, logger, { msg, jid, senderNumber, senderName });
+          } else {
+            await handleImageQuestion(sock, logger, config, { msg, jid, question: parsed.question, senderName });
+          }
+          break;
+        }
         await handleAssistant(sock, logger, config, {
           key: msg.key,
           senderName,
