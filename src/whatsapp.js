@@ -147,20 +147,22 @@ function getImageMessage(msg) {
 }
 
 // Gambar dikirim + trigger kata ("@kacan", "!ai", dst) di caption → unduh gambar,
-// lempar ke Gemini vision (satu-satunya provider gratis yang didukung untuk baca gambar).
+// lempar ke Gemini vision, fallback otomatis ke Ollama lokal (qwen2.5vl) kalau Gemini
+// tidak tersedia (lihat resolveVisionText di ai.js untuk aturan fallback-nya).
 async function handleImageQuestion(sock, logger, config, { msg, jid, question, senderName }) {
   await sock.sendMessage(jid, { text: '🖼️ Menganalisis gambar...' });
   try {
     const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
     const mimeType = getImageMessage(msg)?.mimetype || 'image/jpeg';
-    const reply = await analyzeImage({
+    const { text: reply, source } = await analyzeImage({
       chatId: jid,
       question: question || 'Apa isi gambar ini? Jelaskan singkat dan jelas.',
       imageBase64: buffer.toString('base64'),
       mimeType,
       senderName,
     });
-    await sock.sendMessage(jid, { text: reply, quoted: msg });
+    const note = source === 'ollama-fallback' ? '\n\n_(dibaca via Ollama lokal, Gemini sedang tidak tersedia)_' : '';
+    await sock.sendMessage(jid, { text: reply + note, quoted: msg });
   } catch (err) {
     await sock.sendMessage(jid, { text: aiErrorHint(err), quoted: msg });
   }
@@ -177,7 +179,7 @@ async function handleReceiptScan(sock, logger, { msg, jid, senderNumber, senderN
   try {
     const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
     const mimeType = getImageMessage(msg)?.mimetype || 'image/jpeg';
-    const { total, toko, catatan } = await extractReceiptData({ chatId: jid, imageBase64: buffer.toString('base64'), mimeType });
+    const { total, toko, catatan, source } = await extractReceiptData({ chatId: jid, imageBase64: buffer.toString('base64'), mimeType });
 
     const note = [toko, catatan].filter(Boolean).join(' - ') || 'belanja (dari struk)';
     const category = toko || catatan || 'Lainnya';
@@ -185,8 +187,9 @@ async function handleReceiptScan(sock, logger, { msg, jid, senderNumber, senderN
     pendingExpenseConfirm.set(key, { amount: total, category, note, expiresAt: Date.now() + EXPENSE_CONFIRM_TTL_MS });
 
     const rupiah = total.toLocaleString('id-ID');
+    const sourceNote = source === 'ollama-fallback' ? '\n_(dibaca via Ollama lokal, Gemini sedang tidak tersedia)_' : '';
     await sock.sendMessage(jid, {
-      text: `🧾 *Hasil scan struk*\nTotal: Rp ${rupiah}${toko ? `\nToko: ${toko}` : ''}${catatan ? `\nCatatan: ${catatan}` : ''}\n\nSimpan ke catatan pengeluaran? Balas *ya* untuk simpan, *batal* untuk buang. (berlaku 5 menit)`,
+      text: `🧾 *Hasil scan struk*\nTotal: Rp ${rupiah}${toko ? `\nToko: ${toko}` : ''}${catatan ? `\nCatatan: ${catatan}` : ''}${sourceNote}\n\nSimpan ke catatan pengeluaran? Balas *ya* untuk simpan, *batal* untuk buang. (berlaku 5 menit)`,
       quoted: msg,
     });
   } catch (err) {

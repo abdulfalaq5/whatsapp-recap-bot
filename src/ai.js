@@ -15,6 +15,7 @@ export function initAI(env, log) {
   config = {
     ollama: {
       model: env.OLLAMA_MODEL || 'llama3',
+      visionModel: env.OLLAMA_VISION_MODEL || 'qwen2.5vl:7b',
       baseUrl: (env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/$/, ''),
       temperature: Number(env.OLLAMA_TEMPERATURE ?? 0.6),
       maxTokens: Number(env.OLLAMA_MAX_TOKENS ?? 1024),
@@ -53,6 +54,9 @@ export function initAI(env, log) {
       },
     },
     ollamaTimeoutMs: Number(env.OLLAMA_TIMEOUT_MS || 60000),
+    // Vision di CPU jauh lebih lambat dari chat teks biasa (model qwen2.5vl harus
+    // encode gambar dulu) → timeout terpisah, lebih longgar, default 3 menit.
+    ollamaVisionTimeoutMs: Number(env.OLLAMA_VISION_TIMEOUT_MS || 180000),
     timeoutMs: Number(env.AI_TIMEOUT_MS || 60000),
     cloudCooldownMs: Number(env.AI_CLOUD_COOLDOWN_MS || 60000),
     contextMaxChars: Number(env.AI_CONTEXT_MAX_CHARS || 8000),
@@ -66,6 +70,7 @@ export function initAI(env, log) {
   logger.info(
     {
       ollamaModel: config.ollama.model,
+      ollamaVisionModel: config.ollama.visionModel,
       ollamaBaseUrl: config.ollama.baseUrl,
       ollamaTemperature: config.ollama.temperature,
       ollamaMaxTokens: config.ollama.maxTokens,
@@ -73,6 +78,7 @@ export function initAI(env, log) {
       cloudOrder: config.cloud.order,
       configuredKeys: providerList().map((p) => p.key),
       ollamaTimeoutMs: config.ollamaTimeoutMs,
+      ollamaVisionTimeoutMs: config.ollamaVisionTimeoutMs,
       cloudTimeoutMs: config.timeoutMs,
       cloudCooldownMs: config.cloudCooldownMs,
       contextMaxChars: config.contextMaxChars,
@@ -176,6 +182,16 @@ function isQuotaExhaustedError(err) {
   const msg = `${err?.message || ''} ${err?.cause?.code || ''} ${err?.cause?.message || ''}`;
   if (status === 429 || status === 402 || status === 403) return true;
   return /rate\s*limit|quota|insufficient|exhausted|limit.{0,20}reached|too many requests|free.{0,15}limit/i.test(msg);
+}
+
+// Error yang berarti Gemini Vision sedang TIDAK TERSEDIA (bukan salah gambar/request kita)
+// → layak fallback ke Ollama lokal. 429 = quota habis, 404 = model dihapus/deprecated
+// (persis kasus gemini-2.5-flash kemarin), TimeoutError = sudah di-retry 1x dan tetap gagal.
+// Selain itu (400 dll) BUKAN masalah availability → jangan fallback, lempar ke user apa adanya.
+function isVisionAvailabilityError(err) {
+  const status = Number(err?.status || 0);
+  if (status === 429 || status === 404) return true;
+  return err?.name === 'TimeoutError' || err?.timedOut === true;
 }
 
 function providerInCooldown(key) {
@@ -429,6 +445,33 @@ async function callOllamaRaw(system, prompt, options = {}) {
   );
 }
 
+// Vision lokal (qwen2.5vl) via /api/generate — dipakai sebagai fallback saat Gemini
+// Vision tidak tersedia (quota/model deprecated/timeout). imageBuffer: Buffer mentah
+// (bukan base64 string) supaya callOllamaVision berdiri sendiri tanpa peduli caller
+// encode base64-nya darimana.
+export async function callOllamaVision(imageBuffer, prompt) {
+  const base64 = Buffer.isBuffer(imageBuffer) ? imageBuffer.toString('base64') : imageBuffer;
+  const res = await fetch(`${config.ollama.baseUrl}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: config.ollama.visionModel,
+      prompt,
+      images: [base64],
+      stream: false,
+      options: {
+        temperature: config.ollama.temperature,
+        num_predict: config.ollama.maxTokens,
+      },
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Ollama Vision HTTP ${res.status}: ${await res.text()}`);
+  }
+  const data = await res.json();
+  return data.response ?? '';
+}
+
 // ---- state level per-chat (persist ke tabel settings SQLite) ----
 
 export function getLevel(chatId) {
@@ -475,23 +518,63 @@ export async function askAI({ chatId, question, context = '', senderName = '', s
   }
 }
 
-// Analisis gambar (vision). Sengaja HANYA lewat Gemini (satu-satunya provider yang
-// sudah dikonfigurasi mendukung multimodal + gratis) — tidak fallback ke provider
-// cloud lain supaya tidak diam-diam lari ke provider berbayar.
-export async function analyzeImage({ chatId, question, imageBase64, mimeType, senderName = '' }) {
+// Vision: Gemini dulu, fallback ke Ollama lokal (qwen2.5vl) HANYA kalau Gemini
+// benar-benar tidak tersedia:
+//  - 429 (quota habis) / 404 (model dihapus/deprecated) → fallback langsung.
+//  - Timeout → retry 1x dulu ke Gemini (bisa jadi cuma lambat sesaat), baru fallback
+//    kalau retry-nya juga timeout.
+//  - Error lain (400/gambar corrupt dll) → BUKAN masalah availability, dilempar apa
+//    adanya ke caller, TIDAK fallback (biar user tahu masalahnya di gambar/request-nya).
+// Return { text, source } — source "gemini" atau "ollama-fallback" — supaya caller tahu
+// dari mana jawabannya berasal.
+async function resolveVisionText({ chatId, geminiSystem, geminiPrompt, ollamaPrompt, imageBase64, mimeType, label }) {
   if (!config.cloud.gemini.apiKey) {
     const err = new Error('GEMINI_API_KEY is not set, tidak ada provider vision gratis lain yang dikonfigurasi');
     err.name = 'NoVisionProvider';
     throw err;
   }
-  const system = buildSystemPrompt({ senderName });
-  const reply = await withTimeout(
-    callGeminiVision({ system, prompt: question, imageBase64, mimeType }),
-    config.timeoutMs,
-    'Gemini Vision',
+
+  const tag = label ? ` (${label})` : '';
+  try {
+    let text;
+    try {
+      text = await withTimeout(callGeminiVision({ system: geminiSystem, prompt: geminiPrompt, imageBase64, mimeType }), config.timeoutMs, `Gemini Vision${tag}`);
+    } catch (err) {
+      if (err.name !== 'TimeoutError') throw err;
+      logger.warn({ chatId, label }, 'Gemini Vision timeout, retry 1x sebelum dianggap gagal');
+      text = await withTimeout(callGeminiVision({ system: geminiSystem, prompt: geminiPrompt, imageBase64, mimeType }), config.timeoutMs, `Gemini Vision retry${tag}`);
+    }
+    logger.info({ chatId, provider: 'gemini-vision', label }, 'Vision reply via Gemini');
+    return { text, source: 'gemini' };
+  } catch (err) {
+    if (!isVisionAvailabilityError(err)) throw err;
+    logger.warn(
+      { chatId, label, err: err.message, status: err.status },
+      'Gemini Vision tidak tersedia (quota/model deprecated/timeout) → fallback ke Ollama lokal (qwen2.5vl)',
+    );
+  }
+
+  const text = await withTimeout(
+    callOllamaVision(Buffer.from(imageBase64, 'base64'), ollamaPrompt),
+    config.ollamaVisionTimeoutMs,
+    'Ollama Vision',
   );
-  logger.info({ chatId, provider: 'gemini-vision' }, 'AI image reply via Gemini');
-  return reply;
+  logger.info({ chatId, provider: 'ollama-vision', label }, 'Vision reply via Ollama (fallback)');
+  return { text, source: 'ollama-fallback' };
+}
+
+// Analisis gambar (vision) untuk pertanyaan bebas. Lihat resolveVisionText() untuk aturan fallback.
+export async function analyzeImage({ chatId, question, imageBase64, mimeType, senderName = '' }) {
+  const system = buildSystemPrompt({ senderName });
+  return resolveVisionText({
+    chatId,
+    geminiSystem: system,
+    geminiPrompt: question,
+    ollamaPrompt: `${system}\n\n${question}`,
+    imageBase64,
+    mimeType,
+    label: 'analyze',
+  });
 }
 
 const RECEIPT_PROMPT = `Ini foto struk/nota/kwitansi belanja. Baca dan ekstrak isinya.
@@ -500,26 +583,26 @@ Balas HANYA dengan JSON valid (tanpa markdown, tanpa teks lain di luar JSON), st
 Kalau foto ini BUKAN struk/nota, atau totalnya tidak bisa dibaca dengan yakin, balas HANYA:
 {"error": "<alasan singkat kenapa gagal>"}`;
 
-// Baca struk belanja dari foto → JSON {total, toko, catatan} atau {error}.
-// Sama seperti analyzeImage: hanya lewat Gemini (gratis), tidak fallback ke provider berbayar.
+const RECEIPT_SYSTEM = 'Kamu adalah asisten pembaca struk belanja yang teliti.';
+
+// Baca struk belanja dari foto → { total, toko, catatan, source } atau throw {error}.
+// Lihat resolveVisionText() untuk aturan fallback Gemini → Ollama lokal.
 export async function extractReceiptData({ chatId, imageBase64, mimeType }) {
-  if (!config.cloud.gemini.apiKey) {
-    const err = new Error('GEMINI_API_KEY is not set, tidak ada provider vision gratis lain yang dikonfigurasi');
-    err.name = 'NoVisionProvider';
-    throw err;
-  }
-  const raw = await withTimeout(
-    callGeminiVision({ system: 'Kamu adalah asisten pembaca struk belanja yang teliti.', prompt: RECEIPT_PROMPT, imageBase64, mimeType }),
-    config.timeoutMs,
-    'Gemini Vision (receipt)',
-  );
-  logger.info({ chatId, provider: 'gemini-vision' }, 'Receipt image analyzed via Gemini');
+  const { text: raw, source } = await resolveVisionText({
+    chatId,
+    geminiSystem: RECEIPT_SYSTEM,
+    geminiPrompt: RECEIPT_PROMPT,
+    ollamaPrompt: `${RECEIPT_SYSTEM}\n\n${RECEIPT_PROMPT}`,
+    imageBase64,
+    mimeType,
+    label: 'receipt',
+  });
   const jsonText = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
   let data;
   try {
     data = JSON.parse(jsonText);
   } catch {
-    throw new Error(`Gemini Vision balas format tidak terduga: ${raw.slice(0, 200)}`);
+    throw new Error(`Vision (${source}) balas format tidak terduga: ${raw.slice(0, 200)}`);
   }
   if (data.error) {
     const err = new Error(data.error);
@@ -532,7 +615,7 @@ export async function extractReceiptData({ chatId, imageBase64, mimeType }) {
     err.name = 'ReceiptUnreadable';
     throw err;
   }
-  return { total, toko: String(data.toko || '').trim(), catatan: String(data.catatan || '').trim() };
+  return { total, toko: String(data.toko || '').trim(), catatan: String(data.catatan || '').trim(), source };
 }
 
 // Rekap: coba Ollama dulu, kalau gagal/timeout → chain cloud (RECAP prompt).
