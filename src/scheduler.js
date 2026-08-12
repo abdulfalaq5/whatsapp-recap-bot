@@ -5,10 +5,8 @@ import { handleRekap } from './commands.js';
 export function startScheduler(getSocket, env, logger) {
   const enabled = String(env.AUTO_RECAP_ENABLED || 'false').toLowerCase() === 'true';
   const cronExpr = env.AUTO_RECAP_CRON || '0 21 * * *';
-  const groupIds = (env.WHITELIST_GROUP_IDS || '')
-    .split(',')
-    .map((id) => id.trim())
-    .filter(Boolean);
+  // Group whitelist sekarang dari database (bukan env lagi).
+  const groupIds = storage.getWhitelistGroups();
 
   if (!enabled) {
     logger.info('Auto recap disabled (AUTO_RECAP_ENABLED=false)');
@@ -16,7 +14,7 @@ export function startScheduler(getSocket, env, logger) {
   }
 
   if (groupIds.length === 0) {
-    logger.warn('AUTO_RECAP_ENABLED=true tapi WHITELIST_GROUP_IDS kosong, auto recap di-skip');
+    logger.warn('AUTO_RECAP_ENABLED=true tapi belum ada group terdaftar di database, auto recap di-skip');
     return null;
   }
 
@@ -24,7 +22,7 @@ export function startScheduler(getSocket, env, logger) {
   // jadi wajib daftar ID group eksplisit.
   const explicit = groupIds.filter((id) => id !== '*');
   if (explicit.length === 0) {
-    logger.warn('AUTO_RECAP_ENABLED=true tapi WHITELIST_GROUP_IDS hanya berisi "*". Auto rekap butuh daftar ID group eksplisit.');
+    logger.warn('AUTO_RECAP_ENABLED=true tapi daftar group di database kosong. Auto rekap butuh daftar ID group eksplisit.');
     return null;
   }
 

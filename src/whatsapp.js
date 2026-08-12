@@ -4,14 +4,15 @@ import pino from 'pino';
 import { readdir, rm } from 'fs/promises';
 import * as storage from './storage.js';
 import * as access from './access.js';
-import { parseMessage, handleRekap, HELP_TEXT, handleExpenseAdd, handleExpenseRecap, handleExpenseExport } from './commands.js';
+import { parseMessage, isAddGroupRequest, handleRekap, HELP_TEXT, handleExpenseAdd, handleExpenseRecap, handleExpenseExport } from './commands.js';
 import { handleAssistant } from './assistant.js';
-import { handleLevelCommand } from './ai.js';
+import { handleLevelCommand, askAI, aiErrorHint } from './ai.js';
 import { handleAdminCommand } from './admin.js';
 import { handleVoiceNote } from './voice.js';
 import { handleReminderCommand } from './reminders.js';
 import { handleShoppingCommand } from './shopping.js';
 import { handleSearchImage, handleGenerateImage } from './imageCommands.js';
+import { searchWeb } from './services/webSearch.js';
 import { getWeather, getPrayerTimes } from './info.js';
 
 let config;
@@ -43,19 +44,93 @@ function extractMessageText(msg) {
   return String(text).trim();
 }
 
-function buildWhitelist(raw) {
-  const parts = (raw || '')
+// Whitelist group bersumber dari database (tabel whitelist_groups).
+// 'allowAll' ('*') tetap dari env: bukan ID group, jadi tidak masuk akal disimpan di DB.
+function loadWhitelist(env) {
+  const parts = (env.WHITELIST_GROUP_IDS || '')
     .split(',')
     .map((id) => id.trim())
     .filter(Boolean);
-  // Wildcard '*' → izinkan semua group
   const allowAll = parts.includes('*');
-  const ids = new Set(parts.filter((id) => id !== '*').map((id) => id.toLowerCase()));
+  const ids = new Set(storage.getWhitelistGroups().map((id) => id.toLowerCase()));
   return { allowAll, ids };
+}
+
+// Migrasi sekali jalan: kalau tabel whitelist masih kosong, isi dari env
+// WHITELIST_GROUP_IDS supaya config lama tetap berlaku. Setelah itu DB jadi sumber utama.
+function seedWhitelistFromEnv(env, logger) {
+  if (storage.getWhitelistGroups().length > 0) return;
+  const ids = (env.WHITELIST_GROUP_IDS || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id && id !== '*');
+  for (const id of ids) storage.addWhitelistGroup(id, 'env-migration');
+  if (ids.length) logger.info({ migrated: ids.length }, 'Whitelist groups migrated dari WHITELIST_GROUP_IDS ke database');
+}
+
+function refreshWhitelist() {
+  config.whitelist = access.refreshWhitelistFromDb();
+  return config.whitelist;
+}
+
+async function addGroupToWhitelist(sock, logger, groupId, senderNumber, msg) {
+  storage.addWhitelistGroup(groupId, senderNumber);
+  refreshWhitelist();
+  const total = storage.getWhitelistGroups().length;
+  logger.info({ groupId, senderNumber }, 'Group ditambahkan ke whitelist');
+  await sock.sendMessage(groupId, {
+    text: `✅ Group ini (${groupId}) sudah ditambahkan ke daftar akses bot.\nBot sekarang aktif di sini. Total group terdaftar: ${total}.`,
+    quoted: msg,
+  });
 }
 
 function isGroupAllowed(groupId) {
   return config.whitelist.allowAll || config.whitelist.ids.has(groupId.toLowerCase());
+}
+
+// "!cari <topik>" → cari internet sekarang (selalu pakai Tavily), lalu hasilnya
+// dirangkum AI jadi jawaban yang enak dibaca. Kalau AI gagal → tampilkan hasil mentah.
+async function handleWebSearchCommand(sock, logger, config, { msg, jid, query, senderName, senderNumber }) {
+  if (!query) {
+    await sock.sendMessage(jid, { text: 'Format: !cari <topik>\nContoh: !cari harga iphone 17', quoted: msg });
+    return;
+  }
+  await sock.sendMessage(jid, { text: `🔎 Mencari "${query}" di internet...` });
+  try {
+    const data = await searchWeb(query, logger, config.env.TAVILY_API_KEY || '');
+    if (!data) {
+      await sock.sendMessage(jid, { text: `Tidak ada hasil ditemukan untuk "${query}".`, quoted: msg });
+      return;
+    }
+
+    const context = `Hasil pencarian internet (SUMBER: Tavily/DuckDuckGo/Wikipedia) untuk query "${query}":\n${data}`;
+    const question =
+      `Rangkum hasil pencarian di atas menjadi jawaban untuk pertanyaan: "${query}". ` +
+      'Aturan:\n' +
+      '- Jawab HANYA berdasarkan data hasil pencarian yang diberikan, jangan menambah pengetahuan/angka dari luar.\n' +
+      '- Bahasa Indonesia yang enak dibaca, ringkas tapi lengkap.\n' +
+      '- Sebutkan sumbernya (nama situs) untuk tiap poin penting.\n' +
+      '- Kalau antar sumber bertentangan, sebutkan perbedaannya.\n' +
+      '- Kalau data tidak memuat jawabannya, katakan hasil pencarian tidak menemukan data yang relevan.';
+
+    try {
+      const reply = await askAI({
+        chatId: jid,
+        question,
+        context,
+        senderName,
+        senderNumber,
+      });
+      await sock.sendMessage(jid, { text: reply, quoted: msg });
+    } catch (aiErr) {
+      logger.warn({ err: aiErr, query }, 'AI rangkum untuk !cari gagal, tampilkan hasil mentah');
+      const lines = data.split('\n').slice(0, 8).join('\n');
+      await sock.sendMessage(jid, { text: `🔎 *Hasil pencarian: "${query}"*\n\n${lines}`, quoted: msg });
+    }
+  } catch (err) {
+    logger.error({ err, query }, 'Web search command failed');
+    await sock.sendMessage(jid, { text: 'Pencarian gagal. Coba lagi sebentar.', quoted: msg });
+  }
 }
 
 function getSenderNumber(msg) {
@@ -93,17 +168,30 @@ async function handleIncomingMessage(sock, msg) {
   }
 
   // Log SEMUA group yang mengirim pesan (whitelisted atau tidak),
-  // supaya pengguna bisa menemukan ID group asli lalu menambahkannya ke .env.
+  // supaya admin tahu ada group baru yang butuh akses.
   if (!seenGroups.has(groupId)) {
     seenGroups.add(groupId);
     const isWhitelisted = isGroupAllowed(groupId);
     logger.info({ groupId, whitelisted: isWhitelisted },
       isWhitelisted
         ? 'Whitelisted group detected. Bot aktif di group ini.'
-        : 'Pesan dari group yang BELUM di-whitelist. Tambahkan ID ini ke WHITELIST_GROUP_IDS di .env supaya bot merespons di sini.');
+        : `Pesan dari group yang BELUM di-whitelist (${groupId}). Admin bisa mendaftarkannya dari group itu dengan perintah: "@kacan tambahkan group id ini untuk akses kamu".`);
   }
 
-  if (!isGroupAllowed(groupId)) return;
+  // Group belum di-whitelist → bot tidak merespons, KECUALI admin meminta akses:
+  // "@kacan tambahkan group id ini untuk akses kamu" → daftarkan group ini ke DB.
+  if (!isGroupAllowed(groupId)) {
+    const isAddCmd = /^!(?:tambahgroup|allowgroup)\b/i.test(text);
+    if (isAddCmd || (text.toLowerCase().includes(config.triggerWord) && isAddGroupRequest(text))) {
+      if (access.isAdmin(senderNumber)) {
+        await addGroupToWhitelist(sock, logger, groupId, senderNumber, msg);
+      } else {
+        await sock.sendMessage(groupId, { text: 'Maaf, hanya admin keluarga yang bisa menambahkan group ini ke daftar akses bot.' });
+      }
+    }
+    return;
+  }
+
   // Akses kontrol: nomor yang tidak terdaftar sebagai anggota keluarga tidak diproses.
   if (!access.isFamilyMember(senderNumber, groupId)) {
     logger.debug({ senderNumber }, 'Non-family member message ignored');
@@ -209,8 +297,18 @@ async function handleIncomingMessage(sock, msg) {
       case 'image-generate':
         await handleGenerateImage(sock, logger, config, { msg, groupId, senderNumber, arg: parsed.arg });
         break;
+      case 'web-search':
+        await handleWebSearchCommand(sock, logger, config, { msg, jid: groupId, query: parsed.arg, senderName, senderNumber });
+        break;
       case 'admin':
         await handleAdminCommand(sock, logger, config, { msg, groupId, senderNumber, arg: parsed.arg });
+        break;
+      case 'group-add':
+        if (!access.isAdmin(senderNumber)) {
+          await sock.sendMessage(groupId, { text: 'Maaf, command ini khusus admin keluarga.', quoted: msg });
+          return;
+        }
+        await addGroupToWhitelist(sock, logger, groupId, senderNumber, msg);
         break;
       default:
         break;
@@ -249,11 +347,17 @@ async function handleDirectMessage(sock, msg, senderNumber, senderName, text) {
       case 'admin':
         await handleAdminCommand(sock, logger, config, { msg, groupId: jid, senderNumber, arg: parsed.arg });
         break;
+      case 'group-add':
+        await sock.sendMessage(jid, { text: 'Perintah tambah group harus dijalankan di dalam group yang mau diaktifkan, contoh: "@kacan tambahkan group id ini untuk akses kamu".' });
+        break;
       case 'image-search':
         await handleSearchImage(sock, logger, config, { msg, groupId: jid, senderNumber, arg: parsed.arg });
         break;
       case 'image-generate':
         await handleGenerateImage(sock, logger, config, { msg, groupId: jid, senderNumber, arg: parsed.arg });
+        break;
+      case 'web-search':
+        await handleWebSearchCommand(sock, logger, config, { msg, jid, query: parsed.arg, senderName, senderNumber });
         break;
       default:
         break;
@@ -264,8 +368,9 @@ async function handleDirectMessage(sock, msg, senderNumber, senderName, text) {
 }
 
 export async function startWhatsApp(env, log, onMessage) {
+  seedWhitelistFromEnv(env, log);
   config = {
-    whitelist: buildWhitelist(env.WHITELIST_GROUP_IDS),
+    whitelist: loadWhitelist(env),
     triggerWord: (env.ASSISTANT_TRIGGER_WORD || '@kacan').toLowerCase(),
     env,
     onMessage,

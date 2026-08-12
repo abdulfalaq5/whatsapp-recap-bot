@@ -69,6 +69,14 @@ export function setWhitelist(whitelist) {
   config.whitelist = whitelist;
 }
 
+// Muat ulang daftar group whitelist dari database (source of truth).
+// allowAll ('*') tetap dari env karena tidak masuk akal disimpan per-group.
+export function refreshWhitelistFromDb() {
+  const ids = new Set(storage.getWhitelistGroups().map((id) => id.toLowerCase()));
+  config.whitelist = { allowAll: !!config.whitelist?.allowAll, ids };
+  return config.whitelist;
+}
+
 export function getAdminNumbers() {
   return [...config.admins];
 }

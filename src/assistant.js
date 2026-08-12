@@ -2,6 +2,7 @@ import * as storage from './storage.js';
 import { askAI, aiErrorHint } from './ai.js';
 import { formatChatHistory } from './commands.js';
 import { getWeatherForecast } from './info.js';
+import { searchWeb } from './services/webSearch.js';
 
 // Rate limit per grup: max 1 request tiap N detik
 const lastReplyAt = new Map();
@@ -11,6 +12,11 @@ const RECAP_KEYWORDS = /rekap|kemarin|tadi|barusan|tadi dibahas|dibahas|obrolan|
 
 // Kata kunci pertanyaan cuaca → asisten suntik data cuaca asli (Open-Meteo)
 const WEATHER_KEYWORDS = /cuaca|hujan|panas|dingin|suhu|berap[a]?[^\s]*derajat|angin|kelembapan|berawan|mendung|cerah|badai|petir|prakiraan|perkiraan|forecast/i;
+
+// Kata kunci pertanyaan yang butuh info TERBARU → asisten cari di internet
+// (DuckDuckGo + Wikipedia) lalu jawab pakai hasilnya. Contoh: "harga iphone 17 berapa".
+const WEB_SEARCH_KEYWORDS =
+  /harga|berapakah|berapa\b|terbaru|terkini|update|berita|kabar|sekarang|hari ini|tahun (ini|depan|202\d|20[2-9]\d)|kapan|tanggal|rilis|launch|release|news|latest|price|skor|hasil pertandingan|jadwal|piala|viral|fenomena|presiden|gubernur|walikota|saham|kurs|dolar|euro|biaya|tarif|\b20(2[4-9]|3\d)\b/i;
 
 function rateLimitOk(groupId, seconds) {
   if (!seconds || seconds <= 0) return true;
@@ -58,6 +64,23 @@ async function maybeAttachWeather(question) {
   }
 }
 
+// Cari info terbaru di internet kalau pertanyaannya butuh data kekinian.
+// Provider utama Tavily (kalau TAVILY_API_KEY diisi), fallback DuckDuckGo/Wikipedia.
+// Gagal/tanpa hasil → dikembalikan kosong, biar asisten tetap jalan normal.
+async function maybeAttachWebSearch(question, config, logger) {
+  const enabled = (config?.env?.ASSISTANT_WEB_SEARCH_ENABLED ?? 'true') !== 'false';
+  if (!enabled) return '';
+  if (!WEB_SEARCH_KEYWORDS.test(question)) return '';
+  try {
+    const data = await searchWeb(question, logger, config?.env?.TAVILY_API_KEY || '');
+    if (!data) return '';
+    return `Hasil pencarian internet (SUMBER: Tavily/DuckDuckGo/Wikipedia). Data ini yang paling update; utamakan untuk informasi yang berubah-ubah seperti harga, berita, skor, jadwal:\n${data}`;
+  } catch (err) {
+    logger.debug?.({ err }, 'Web search skipped');
+    return '';
+  }
+}
+
 async function getRecentGroupContext(groupId, minutes = 180) {
   const end = Date.now();
   const start = end - minutes * 60 * 1000;
@@ -97,9 +120,11 @@ export async function handleAssistant(sock, logger, config, message) {
   if (groupContext) contextParts.push(`Obrolan grup terbaru (${groupContext.split('\n').length} baris):\n${groupContext}`);
   const weatherData = await maybeAttachWeather(message.text);
   if (weatherData) contextParts.push(weatherData);
+  const webData = await maybeAttachWebSearch(message.text, config, logger);
+  if (webData) contextParts.push(webData);
   const fullContext = contextParts.join('\n\n');
 
-  logger.info({ groupId, question: message.text, hasPersonal: !!personalHistory, hasShared: !!sharedText }, 'Assistant request');
+  logger.info({ groupId, question: message.text, hasPersonal: !!personalHistory, hasShared: !!sharedText, hasWeather: !!weatherData, hasWebSearch: !!webData }, 'Assistant request');
 
   try {
     const reply = await askAI({

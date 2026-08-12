@@ -20,7 +20,7 @@ Mode AI punya fallback otomatis multi-provider: Ollama lokal dulu, lalu kalau ga
    ```
 
    Isi minimal yang wajib:
-   - `WHITELIST_GROUP_IDS` — ID grup yang boleh dipakai bot (pisahkan koma untuk beberapa grup). Bisa diisi kosong dulu lalu tambahkan setelah mendapat ID dari log (lihat "Cara Mendapatkan Group ID"). Bisa juga diisi `*` untuk mengizinkan semua group — tapi ini tidak disarankan karena siapa pun yang menambahkan nomor bot ke group-nya bisa langsung memakai AI ini.
+   - `ADMIN_NUMBERS` — nomor WhatsApp admin keluarga. Ini penting karena daftar group sekarang dikelola dari chat lewat perintah admin (tidak perlu edit `.env` lagi).
    - `OLLAMA_MODEL` — nama model yang sudah di-pull.
    - `OLLAMA_BASE_URL` — biarkan `http://host.docker.internal:11434` (khusus Docker). Kalau jalan langsung tanpa Docker, ganti `http://localhost:11434`.
 
@@ -48,20 +48,30 @@ Mode AI punya fallback otomatis multi-provider: Ollama lokal dulu, lalu kalau ga
 | `docker compose down` | Stop container |
 | `docker compose logs -f whatsapp-assistant` | Log container tertentu |
 
-## Cara Mendapatkan Group ID
+## Cara Mendapatkan Group ID / Mengaktifkan Group
 
-Bot kini menampilkan **semua** ID group yang mengirim pesan ke log, walau belum di-whitelist (format `123456789-123456@g.us`). Caranya:
+Daftar group yang boleh dipakai bot sekarang tersimpan di **database**, bukan `.env`. Jadi untuk mengaktifkan bot di sebuah group, admin tidak perlu buka script/edit file — cukup dari chat:
 
 1. Tambahkan nomor bot ke group WhatsApp.
-2. Kirim pesan apa pun dari group itu (bot akan menyimpan ID-nya di log, meski belum membalas).
-3. Cek log: `docker compose logs -f` → cari baris `Pesan dari group yang BELUM di-whitelist. Tambahkan ID ini ke WHITELIST_GROUP_IDS...` dan salin ID-nya.
-4. Tempel ID asli ke `.env`, lalu `docker compose up -d --force-recreate` (atau `docker compose restart`).
+2. Dari group itu, admin kirim: `@kacan tambahkan group id ini untuk akses kamu`
+3. Bot langsung memasukkan group id-nya ke database dan membalas konfirmasi. Setelah itu bot aktif di group tersebut.
+
+Command alternatif / pengelolaan:
+
+| Command | Aksi |
+|---|---|
+| `@kacan tambahkan group id ini untuk akses kamu` | Daftarkan group ini ke database (khusus admin) |
+| `!tambahgroup` | Sama seperti di atas, versi command singkat (khusus admin) |
+| `!hapusgroup <id>` | Hapus group dari daftar akses (khusus admin) |
+
+Bot tetap mencatat semua group yang mengirim pesan (walau belum terdaftar) ke log, format `123456789-123456@g.us`. Lihat dengan `docker compose logs -f`.
 
 ## Command Bot
 
 | Command | Aksi |
 |---|---|
-| `@kacan <pertanyaan>` | Panggil asisten AI (bisa di tengah kalimat) |
+| `@kacan <pertanyaan>` | Panggil asisten AI (bisa di tengah kalimat). Otomatis cari di internet saat butuh info terbaru (misal "harga iphone 17 berapa") |
+| `!cari <topik>` | Cari info di internet sekarang (selalu pakai Tavily, tanpa lewat AI) |
 | `!ai <pertanyaan>` / `!tanya <pertanyaan>` | Alternatif panggil asisten |
 | `@kacan naikan level mu` | Pindahkan chat ini ke mode cloud (langsung pakai provider cloud, tidak coba Ollama) |
 | `@kacan standarkan level` | Kembalikan ke mode standar (coba Ollama dulu, fallback otomatis ke cloud) |
@@ -123,7 +133,7 @@ Catatan: bot hanya merespons saat ada trigger (`@kacan`/`!ai`/`!tanya`) atau com
 | `AI_CONTEXT_MAX_CHARS` | `8000` | Batas panjang konteks yang dikirim ke model (lebih pendek = jawaban fokus/tidak campur) |
 | `AI_TIMEOUT_MS` | `8000` | Timeout request per provider cloud (ms) |
 | `AI_DEFAULT_LEVEL` | `standard` | Level default per-chat: `standard` (Ollama + fallback) atau `cloud` |
-| `WHITELIST_GROUP_IDS` | — | ID grup yang diizinkan, pisahkan koma. Isi `*` untuk semua group (tidak disarankan). |
+| `WHITELIST_GROUP_IDS` | — | (Legacy, opsional) Hanya dipakai sekali saat migrasi awal ke database. Sejak versi database, daftar group dikelola dari chat: `@kacan tambahkan group id ini untuk akses kamu` / `!tambahgroup` / `!hapusgroup <id>`. |
 | `ADMIN_NUMBERS` | — | Nomor admin (pisahkan koma). Kosong = belum ada admin. Contoh `6281234567890`. |
 | `FAMILY_MEMBERS` | — | Daftar nomor anggota keluarga. Kosong = semua orang di group whitelist dianggap anggota. |
 | `AUTO_RECAP_ENABLED` | `false` | Aktifkan rekap otomatis |
@@ -133,6 +143,8 @@ Catatan: bot hanya merespons saat ada trigger (`@kacan`/`!ai`/`!tanya`) atau com
 | `CONVERSATION_MEMORY_LIMIT` | `20` | Sliding window konteks percakapan grup |
 | `PERSONAL_MEMORY_LIMIT` | `20` | Sliding window histori pribadi per nomor |
 | `ASSISTANT_RATE_LIMIT_SECONDS` | `5` | Rate limit per grup |
+| `ASSISTANT_WEB_SEARCH_ENABLED` | `true` | Asisten otomatis cari info terbaru di internet saat pertanyaan butuh data kekinian (harga, berita, skor, dll) |
+| `TAVILY_API_KEY` | — | API key Tavily (provider web search utama). Kosong → otomatis pakai fallback gratis DuckDuckGo/Wikipedia. Daftar: https://app.tavily.com |
 | `HEALTH_CHECK_ENABLED` | `true` | Notifikasi admin saat koneksi turun |
 | `HEALTH_CHECK_INTERVAL_MIN` | `5` | Interval cek kesehatan |
 | `LOG_DIR` | `./logs` | Folder log (rotasi harian) |
@@ -164,7 +176,7 @@ Catatan: bot hanya merespons saat ada trigger (`@kacan`/`!ai`/`!tanya`) atau com
 
 - **`host.docker.internal` gagal resolve**: pastikan `extra_hosts: host.docker.internal:host-gateway` ada di `docker-compose.yml` (sudah disediakan). Pastikan juga Ollama bind ke `127.0.0.1:11434`, bukan port lain.
 - **`MODEL NOT FOUND`**: jalankan `ollama pull <nama-model>` di host.
-- **Bot tidak merespons**: pastikan ID grup benar di `WHITELIST_GROUP_IDS` dan pesan memakai trigger (`@kacan`/`!ai`/`!tanya`).
+- **Bot tidak merespons**: pastikan group sudah terdaftar (admin kirim `@kacan tambahkan group id ini untuk akses kamu` di group itu atau cek dengan `!tambahgroup`) dan pesan memakai trigger (`@kacan`/`!ai`/`!tanya`).
 - **Session logout**: hapus `auth_session/` (atau `docker compose down` lalu `rm -rf auth_session`) dan ulangi scan QR.
 
 ## Peringatan

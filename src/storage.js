@@ -107,6 +107,14 @@ CREATE TABLE IF NOT EXISTS expenses (
 );
 `;
 
+const WHITELIST_GROUPS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS whitelist_groups (
+  group_id TEXT PRIMARY KEY,
+  added_at INTEGER NOT NULL,
+  added_by TEXT
+);
+`;
+
 export function initStorage(dbPath, logger) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   db = new Database(dbPath);
@@ -125,6 +133,7 @@ export function initStorage(dbPath, logger) {
   db.exec(SHOPPING_SCHEMA);
   db.exec(EXPENSES_SCHEMA);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_expenses_time ON expenses (timestamp);`);
+  db.exec(WHITELIST_GROUPS_SCHEMA);
   logger.info({ dbPath }, 'SQLite storage ready');
   return db;
 }
@@ -285,4 +294,27 @@ export function pruneOldMessages(daysToKeep) {
 export function getLastMessageTimestamp() {
   const row = db.prepare(`SELECT MAX(timestamp) AS ts FROM messages`).get();
   return row && row.ts ? row.ts : null;
+}
+
+// ---- whitelist group (source of truth sekarang di database) ----
+
+export function addWhitelistGroup(groupId, addedBy = null) {
+  const id = String(groupId).trim().toLowerCase();
+  if (!id) return null;
+  db.prepare(`
+    INSERT OR IGNORE INTO whitelist_groups (group_id, added_at, added_by)
+    VALUES (?, ?, ?)
+  `).run(id, Date.now(), addedBy);
+  return id;
+}
+
+export function removeWhitelistGroup(groupId) {
+  return db.prepare(`DELETE FROM whitelist_groups WHERE group_id = ?`).run(String(groupId).trim().toLowerCase());
+}
+
+export function getWhitelistGroups() {
+  return db
+    .prepare(`SELECT group_id FROM whitelist_groups ORDER BY added_at ASC`)
+    .all()
+    .map((r) => r.group_id);
 }

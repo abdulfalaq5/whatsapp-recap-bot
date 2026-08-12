@@ -43,7 +43,7 @@ export async function handleAdminCommand(sock, logger, config, { msg, groupId, s
       const targets = new Set(getWhitelistedGroupIds(config));
       for (const m of storage.getAllMembers()) targets.add(`${access.normalizeNumber(m.number)}@s.whatsapp.net`);
       if (targets.size === 0) {
-        await sock.sendMessage(groupId, { text: 'Tidak ada group/anggota untuk broadcast. Pastikan WHITELIST_GROUP_IDS eksplisit (bukan *) atau ada anggota terdaftar.' });
+        await sock.sendMessage(groupId, { text: 'Tidak ada group/anggota untuk broadcast. Pastikan ada group terdaftar di database atau ada anggota terdaftar.' });
         return;
       }
       let sent = 0;
@@ -79,7 +79,38 @@ export async function handleAdminCommand(sock, logger, config, { msg, groupId, s
       return;
     }
 
-    await sock.sendMessage(groupId, { text: 'Command admin: !restart | !log | !broadcast <pesan> | !tambahmember <nomor> <nama>', quoted: msg });
+    if (lower.startsWith('tambahgroup') || lower.startsWith('allowgroup')) {
+      if (!groupId.endsWith('@g.us')) {
+        await sock.sendMessage(groupId, { text: 'Command ini hanya bisa dijalankan di dalam group yang mau diaktifkan.', quoted: msg });
+        return;
+      }
+      storage.addWhitelistGroup(groupId, senderNumber);
+      config.whitelist = access.refreshWhitelistFromDb();
+      logger.info({ groupId, senderNumber }, 'Group added to whitelist via admin command');
+      await sock.sendMessage(groupId, { text: `✅ Group ini (${groupId}) sudah ditambahkan ke daftar akses bot.\nBot sekarang aktif di sini.`, quoted: msg });
+      return;
+    }
+
+    if (lower.startsWith('hapusgroup')) {
+      const id = arg.trim().slice('hapusgroup'.length).trim();
+      if (!id) {
+        await sock.sendMessage(groupId, { text: 'Format: !hapusgroup <group id>\nContoh: !hapusgroup 120363419070921605@g.us', quoted: msg });
+        return;
+      }
+      const cleanId = id.endsWith('@g.us') ? id : `${id}@g.us`;
+      const result = storage.removeWhitelistGroup(cleanId);
+      config.whitelist = access.refreshWhitelistFromDb();
+      logger.info({ groupId: cleanId, senderNumber, removed: result.changes }, 'Group removed from whitelist by admin');
+      await sock.sendMessage(groupId, {
+        text: result.changes > 0
+          ? `✅ Group ${cleanId} dihapus dari daftar akses bot. Bot tidak akan merespons di group itu lagi.`
+          : `Group ${cleanId} tidak ada di daftar akses bot.`,
+        quoted: msg,
+      });
+      return;
+    }
+
+    await sock.sendMessage(groupId, { text: 'Command admin: !restart | !log | !broadcast <pesan> | !tambahmember <nomor> <nama> | !tambahgroup | !hapusgroup <group id>', quoted: msg });
   } catch (err) {
     logger.error({ err }, 'Admin command failed');
     await sock.sendMessage(groupId, { text: 'Gagal menjalankan command admin. Cek log.' });

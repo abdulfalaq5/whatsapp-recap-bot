@@ -20,7 +20,9 @@ export const HELP_TEXT = `Command yang tersedia:
 • 🌤️ !cuaca | 🕌 !sholat
 • 🖼️ !carigambar <kata kunci> | 🎨 !buatgambar <deskripsi>
 • @kacan help / !help / !bantuan - tampilkan daftar command
-Admin: !restart | !log | !broadcast <pesan> | !tambahmember <nomor> <nama> | !reset semua`;
+• 🔎 !cari <topik> - cari info di internet sekarang (selalu pakai Tavily)
+• @kacan tambahkan group id ini untuk akses kamu - daftarkan group ini (khusus admin)
+Admin: !restart | !log | !broadcast <pesan> | !tambahmember <nomor> <nama> | !tambahgroup | !hapusgroup <group id> | !reset semua`;
 
 function stripPrefix(text, prefixes) {
   for (const p of prefixes) {
@@ -47,14 +49,29 @@ function matchLevelCommand(text, config) {
   return null;
 }
 
+// Deteksi permintaan admin untuk mendaftarkan group ke daftar akses bot.
+// Contoh: "@kacan tambahkan group id ini untuk akses kamu".
+const ADD_GROUP_PATTERN = /(?:tambah(?:kan|in)?|daftar(?:kan)?)\s+group|(?:minta|beri|kasih)\s+akses/i;
+
+export function isAddGroupRequest(text) {
+  return ADD_GROUP_PATTERN.test(String(text || '').trim());
+}
+
 export function parseMessage(text, config) {
   const t = (text ?? '').trim();
   if (!t) return null;
 
   const lower = t.toLowerCase();
+  const triggerWord = (config.ASSISTANT_TRIGGER_WORD || '@kacan').toLowerCase();
 
   if (lower.startsWith('!help') || lower.startsWith('!bantuan')) {
     return { kind: 'help' };
+  }
+
+  // Daftarkan group ini ke whitelist (khusus admin). Wajib pakai trigger word
+  // supaya tidak tabrakan dengan pertanyaan biasa ke asisten.
+  if (lower.includes(triggerWord) && isAddGroupRequest(t)) {
+    return { kind: 'group-add' };
   }
 
   if (lower.startsWith('!lupakan')) {
@@ -70,7 +87,7 @@ export function parseMessage(text, config) {
   }
 
   // Admin commands (diproses handleAdminCommand)
-  if (/^!(restart|log|broadcast|tambahmember)\b/.test(lower)) {
+  if (/^!(restart|log|broadcast|tambahmember|tambahgroup|allowgroup|hapusgroup)\b/.test(lower)) {
     return { kind: 'admin', arg: t.slice(1) };
   }
 
@@ -107,6 +124,12 @@ export function parseMessage(text, config) {
     return { kind: 'image-generate', arg: t.slice('!buatgambar'.length).trim() };
   }
 
+  // Pencarian internet paksa (selalu pakai Tavily). Ditaruh SETELAH !carigambar
+  // supaya tidak menelan prefix command gambar.
+  if (lower.startsWith('!cari')) {
+    return { kind: 'web-search', arg: t.slice('!cari'.length).trim() };
+  }
+
   // Rekap chat (tetap backward-compatible). "!rekap bulan ini" → rekap pengeluaran.
   if (lower.startsWith('!rekap')) {
     const arg = t.slice('!rekap'.length).trim();
@@ -126,8 +149,6 @@ export function parseMessage(text, config) {
     if (isHelpRequest(viaPrefix)) return { kind: 'help' };
     return { kind: 'assistant', question: viaPrefix };
   }
-
-  const triggerWord = (config.ASSISTANT_TRIGGER_WORD || '@kacan').toLowerCase();
 
   // Command level AI dicek dulu sebelum pesan diproses sebagai prompt asisten.
   const levelCommand = matchLevelCommand(t, config);
