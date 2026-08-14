@@ -6,13 +6,15 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "owntracks:adduser": "node scripts/addOwntracksUser.js"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6",
+    "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11",
     "dotenv": "^16",
     "node-cron": "^3",

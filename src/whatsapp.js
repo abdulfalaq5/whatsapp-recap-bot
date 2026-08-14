@@ -13,6 +13,8 @@ import { handleVoiceNote } from './voice.js';
 import { handleReminderCommand } from './reminders.js';
 import { handleShoppingCommand } from './shopping.js';
 import { handleSearchImage, handleGenerateImage } from './imageCommands.js';
+import { handleOwnTracksRegister, handleOwnTracksList, handleOwnTracksReset } from './owntracksCommands.js';
+import { handleCariLokasi, handleStopCariLokasi } from './locationWatch.js';
 import { searchWeb } from './services/webSearch.js';
 import { getWeather, getPrayerTimes } from './info.js';
 
@@ -405,6 +407,21 @@ async function handleIncomingMessage(sock, msg) {
       case 'web-search':
         await handleWebSearchCommand(sock, logger, config, { msg, jid: groupId, query: parsed.arg, senderName, senderNumber });
         break;
+      case 'owntracks-register':
+        await handleOwnTracksRegister(sock, logger, { msg, groupId, arg: parsed.arg });
+        break;
+      case 'owntracks-list':
+        await handleOwnTracksList(sock, logger, { msg, groupId });
+        break;
+      case 'owntracks-reset':
+        await handleOwnTracksReset(sock, logger, { msg, groupId, arg: parsed.arg });
+        break;
+      case 'owntracks-watch-start':
+        await handleCariLokasi(sock, logger, { msg, groupId, arg: parsed.arg });
+        break;
+      case 'owntracks-watch-stop':
+        await handleStopCariLokasi(sock, logger, { msg, groupId });
+        break;
       case 'admin':
         await handleAdminCommand(sock, logger, config, { msg, groupId, senderNumber, arg: parsed.arg });
         break;
@@ -475,6 +492,21 @@ async function handleDirectMessage(sock, msg, senderNumber, senderName, text) {
         break;
       case 'web-search':
         await handleWebSearchCommand(sock, logger, config, { msg, jid, query: parsed.arg, senderName, senderNumber });
+        break;
+      case 'owntracks-register':
+        await handleOwnTracksRegister(sock, logger, { msg, groupId: jid, arg: parsed.arg });
+        break;
+      case 'owntracks-list':
+        await handleOwnTracksList(sock, logger, { msg, groupId: jid });
+        break;
+      case 'owntracks-reset':
+        await handleOwnTracksReset(sock, logger, { msg, groupId: jid, arg: parsed.arg });
+        break;
+      case 'owntracks-watch-start':
+        await handleCariLokasi(sock, logger, { msg, groupId: jid, arg: parsed.arg });
+        break;
+      case 'owntracks-watch-stop':
+        await handleStopCariLokasi(sock, logger, { msg, groupId: jid });
         break;
       default:
         break;

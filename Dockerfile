@@ -12,6 +12,7 @@ COPY package*.json ./
 RUN npm install --omit=dev
 
 COPY src ./src
+COPY scripts ./scripts
 
 # Volume mount points untuk data yang perlu persist
 VOLUME ["/app/auth_session", "/app/data"]

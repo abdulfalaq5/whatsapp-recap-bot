@@ -10,6 +10,7 @@ import { startHealthCheck } from './health.js';
 import { startReminderScheduler } from './reminders.js';
 import { initInfo } from './info.js';
 import { startServerBatteryMonitor } from './battery.js';
+import { startHttpServer } from './httpServer.js';
 
 const logDir = process.env.LOG_DIR || './logs';
 fs.mkdirSync(logDir, { recursive: true });
@@ -56,6 +57,7 @@ async function main() {
   const reminderScheduler = startReminderScheduler(() => wa.getSocket(), logger);
   batteryMonitor = startServerBatteryMonitor(() => wa.getSocket(), logger, process.env);
   initInfo(process.env, logger);
+  const httpServer = startHttpServer(process.env, logger);
 
   logger.info(`Last stored message timestamp: ${getLastMessageTimestamp() ?? 'none'}`);
 
@@ -66,6 +68,7 @@ async function main() {
       if (health) health.stop();
       if (reminderScheduler) reminderScheduler.stop();
       if (batteryMonitor) batteryMonitor.stop();
+      if (httpServer) httpServer.stop();
       if (wa.end) wa.end(new Error('bot shutting down'));
       closeStorage();
     } catch (err) {

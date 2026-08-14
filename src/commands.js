@@ -19,6 +19,8 @@ export const HELP_TEXT = `Command yang tersedia:
 • 💸 !catat <jumlah> <catatan> | !rekap bulan ini | !export
 • 🌤️ !cuaca | 🕌 !sholat
 • 🖼️ !carigambar <kata kunci> | 🎨 !buatgambar <deskripsi>
+• 📍 !regislokasi <username> <password> [nama] | !regislokasilist | !regislokasireset <username> <password-baru>
+• 🛰️ !carilokasi <nama> - kirim lokasi terkini + update tiap 5 menit | !stopcarilokasi - hentikan semua pantauan lokasi di chat ini
 • 📸 Kirim gambar + caption "@kacan <pertanyaan>" - asisten baca isi gambarnya
 • 🧾 Kirim foto struk + caption "@kacan tolong catat harga ini" - asisten baca struk, minta konfirmasi (ya/batal) sebelum disimpan ke pengeluaran
 • @kacan help / !help / !bantuan - tampilkan daftar command
@@ -104,6 +106,24 @@ export function parseMessage(text, config) {
   // Shopping list
   if (lower.startsWith('!belanja')) {
     return { kind: 'shopping', arg: t.slice('!belanja'.length).trim() };
+  }
+
+  // OwnTracks (lokasi keluarga). Dicek urut dari prefix terpanjang dulu supaya
+  // !regislokasilist / !regislokasireset tidak ketelan sama !regislokasi.
+  if (lower.startsWith('!regislokasilist')) {
+    return { kind: 'owntracks-list' };
+  }
+  if (lower.startsWith('!regislokasireset')) {
+    return { kind: 'owntracks-reset', arg: t.slice('!regislokasireset'.length).trim() };
+  }
+  if (lower.startsWith('!regislokasi')) {
+    return { kind: 'owntracks-register', arg: t.slice('!regislokasi'.length).trim() };
+  }
+  if (lower.startsWith('!stopcarilokasi')) {
+    return { kind: 'owntracks-watch-stop' };
+  }
+  if (lower.startsWith('!carilokasi')) {
+    return { kind: 'owntracks-watch-start', arg: t.slice('!carilokasi'.length).trim() };
   }
 
   // Expenses

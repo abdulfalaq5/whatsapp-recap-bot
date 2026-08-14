@@ -115,6 +115,26 @@ CREATE TABLE IF NOT EXISTS whitelist_groups (
 );
 `;
 
+const LOCATIONS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS locations (
+  user_id TEXT PRIMARY KEY,
+  latitude REAL NOT NULL,
+  longitude REAL NOT NULL,
+  accuracy REAL,
+  battery INTEGER,
+  updated_at INTEGER NOT NULL
+);
+`;
+
+const OWNTRACKS_USERS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS owntracks_users (
+  username TEXT PRIMARY KEY,
+  password_hash TEXT NOT NULL,
+  display_name TEXT,
+  created_at INTEGER NOT NULL
+);
+`;
+
 export function initStorage(dbPath, logger) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   db = new Database(dbPath);
@@ -134,6 +154,8 @@ export function initStorage(dbPath, logger) {
   db.exec(EXPENSES_SCHEMA);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_expenses_time ON expenses (timestamp);`);
   db.exec(WHITELIST_GROUPS_SCHEMA);
+  db.exec(LOCATIONS_SCHEMA);
+  db.exec(OWNTRACKS_USERS_SCHEMA);
   logger.info({ dbPath }, 'SQLite storage ready');
   return db;
 }
