@@ -10,9 +10,11 @@ import { handleLevelCommand, askAI, analyzeImage, extractReceiptData, aiErrorHin
 import * as expenses from './expenses.js';
 import { handleAdminCommand } from './admin.js';
 import { handleVoiceNote } from './voice.js';
+import { handleDengerinStart, handleDengerinStop, handleIncomingVoiceNote, hasActiveSession } from './dengerin.js';
 import { handleReminderCommand } from './reminders.js';
 import { handleShoppingCommand } from './shopping.js';
 import { handleSearchImage, handleGenerateImage } from './imageCommands.js';
+import { handleGenerateDocument } from './documentCommands.js';
 import { handleOwnTracksRegister, handleOwnTracksList, handleOwnTracksReset } from './owntracksCommands.js';
 import { handleCariLokasi, handleStopCariLokasi } from './locationWatch.js';
 import { searchWeb } from './services/webSearch.js';
@@ -244,9 +246,14 @@ async function handleIncomingMessage(sock, msg) {
   const senderNumber = getSenderNumber(msg);
   const senderName = access.resolveMemberName(senderNumber, msg.pushName);
 
-  // Voice note → tangani terpisah (transcribe di-skip, fallback sopan).
+  // Voice note → kalau chat ini punya sesi "!dengerin" aktif, proses lewat pipeline dengerin
+  // (transkrip → jawab → balas suara). Kalau tidak ada sesi, fallback sopan biasa.
   if (msg.message?.audioMessage || msg.message?.pttMessage) {
-    await handleVoiceNote(sock, logger, config, msg);
+    if (hasActiveSession(groupId)) {
+      await handleIncomingVoiceNote(sock, logger, config, msg, { groupId, senderNumber });
+    } else {
+      await handleVoiceNote(sock, logger, config, msg);
+    }
     return;
   }
 
@@ -404,6 +411,9 @@ async function handleIncomingMessage(sock, msg) {
       case 'image-generate':
         await handleGenerateImage(sock, logger, config, { msg, groupId, senderNumber, arg: parsed.arg });
         break;
+      case 'document-generate':
+        await handleGenerateDocument(sock, logger, config, { msg, groupId, senderNumber, arg: parsed.arg });
+        break;
       case 'web-search':
         await handleWebSearchCommand(sock, logger, config, { msg, jid: groupId, query: parsed.arg, senderName, senderNumber });
         break;
@@ -421,6 +431,12 @@ async function handleIncomingMessage(sock, msg) {
         break;
       case 'owntracks-watch-stop':
         await handleStopCariLokasi(sock, logger, { msg, groupId });
+        break;
+      case 'dengerin-start':
+        await handleDengerinStart(sock, logger, config, { msg, groupId, senderNumber, senderName });
+        break;
+      case 'dengerin-stop':
+        await handleDengerinStop(sock, logger, { msg, groupId, senderNumber });
         break;
       case 'admin':
         await handleAdminCommand(sock, logger, config, { msg, groupId, senderNumber, arg: parsed.arg });
@@ -490,6 +506,9 @@ async function handleDirectMessage(sock, msg, senderNumber, senderName, text) {
       case 'image-generate':
         await handleGenerateImage(sock, logger, config, { msg, groupId: jid, senderNumber, arg: parsed.arg });
         break;
+      case 'document-generate':
+        await handleGenerateDocument(sock, logger, config, { msg, groupId: jid, senderNumber, arg: parsed.arg });
+        break;
       case 'web-search':
         await handleWebSearchCommand(sock, logger, config, { msg, jid, query: parsed.arg, senderName, senderNumber });
         break;
@@ -507,6 +526,12 @@ async function handleDirectMessage(sock, msg, senderNumber, senderName, text) {
         break;
       case 'owntracks-watch-stop':
         await handleStopCariLokasi(sock, logger, { msg, groupId: jid });
+        break;
+      case 'dengerin-start':
+        await handleDengerinStart(sock, logger, config, { msg, groupId: jid, senderNumber, senderName });
+        break;
+      case 'dengerin-stop':
+        await handleDengerinStop(sock, logger, { msg, groupId: jid, senderNumber });
         break;
       default:
         break;

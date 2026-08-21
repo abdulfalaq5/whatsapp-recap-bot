@@ -632,6 +632,114 @@ export async function generateRecap(historyText) {
   }
 }
 
+// ---- generate dokumen (docx/xlsx/pptx) ----
+
+const DOC_JSON_INSTRUCTION = 'PENTING: Balas HANYA dengan JSON valid, tanpa markdown, tanpa backtick, tanpa teks pembuka/penutup di luar JSON.';
+
+function docSystemPrompt(docType) {
+  if (docType === 'docx') {
+    return `Kamu adalah asisten yang menyusun isi dokumen Word terstruktur dari permintaan pengguna dalam Bahasa Indonesia.
+${DOC_JSON_INSTRUCTION}
+Struktur JSON:
+{"title": "<judul dokumen>", "sections": [{"heading": "<judul bagian, boleh string kosong>", "paragraphs": ["<paragraf 1>", "..."], "bulletList": ["<poin 1>", "..."]}]}
+- "paragraphs" dan "bulletList" boleh salah satu array kosong [] kalau tidak relevan untuk section itu.
+- Isi wajar dan relevan dengan permintaan, maksimal sekitar 6 section.`;
+  }
+  if (docType === 'xlsx') {
+    return `Kamu adalah asisten yang menyusun data tabular untuk file Excel dari permintaan pengguna dalam Bahasa Indonesia.
+${DOC_JSON_INSTRUCTION}
+Struktur JSON (satu sheet):
+{"sheetName": "<nama sheet, maks 31 karakter>", "headers": ["<kolom1>", "..."], "rows": [["<nilai1>", "<nilai2>", "..."]]}
+Kalau perlu lebih dari satu sheet, pakai bentuk:
+{"sheets": [{"sheetName": "...", "headers": [...], "rows": [[...]]}]}
+- Setiap baris di "rows" harus punya jumlah nilai sama dengan jumlah "headers".
+- Kolom uang/rupiah diisi angka murni tanpa "Rp"/titik/koma supaya bisa diformat currency.
+- Data wajar dan relevan, maksimal sekitar 30 baris kecuali user minta jumlah spesifik.`;
+  }
+  return `Kamu adalah asisten yang menyusun isi slide presentasi PowerPoint dari permintaan pengguna dalam Bahasa Indonesia.
+${DOC_JSON_INSTRUCTION}
+Struktur JSON:
+{"title": "<judul presentasi>", "slides": [{"heading": "<judul slide>", "bullets": ["<poin 1>", "..."]}]}
+- Maksimal 10 slide kecuali user minta jumlah spesifik dan wajar.
+- Setiap slide maksimal sekitar 5 bullet poin singkat.`;
+}
+
+function stripJsonFences(raw) {
+  return String(raw || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+}
+
+// Batas wajar supaya dokumen tidak kebablasan (mis. user minta 50 slide/500+ baris).
+function normalizeDocumentContent(docType, data) {
+  if (docType === 'pptx') {
+    const slides = Array.isArray(data.slides) ? data.slides.slice(0, 10) : [];
+    return {
+      title: String(data.title || 'Presentasi'),
+      slides: slides.map((s) => ({
+        heading: String(s?.heading || ''),
+        bullets: Array.isArray(s?.bullets) ? s.bullets.slice(0, 8).map(String) : [],
+      })),
+    };
+  }
+  if (docType === 'xlsx') {
+    const rawSheets = Array.isArray(data.sheets) && data.sheets.length
+      ? data.sheets
+      : [{ sheetName: data.sheetName, headers: data.headers, rows: data.rows }];
+    return {
+      sheets: rawSheets.slice(0, 5).map((s) => ({
+        sheetName: String(s?.sheetName || 'Sheet1').slice(0, 31),
+        headers: Array.isArray(s?.headers) ? s.headers.map(String) : [],
+        rows: Array.isArray(s?.rows) ? s.rows.slice(0, 500) : [],
+      })),
+    };
+  }
+  const sections = Array.isArray(data.sections) ? data.sections.slice(0, 15) : [];
+  return {
+    title: String(data.title || 'Dokumen'),
+    sections: sections.map((s) => ({
+      heading: String(s?.heading || ''),
+      paragraphs: Array.isArray(s?.paragraphs) ? s.paragraphs.map(String) : [],
+      bulletList: Array.isArray(s?.bulletList) ? s.bulletList.map(String) : [],
+    })),
+  };
+}
+
+// Minta AI menyusun konten dokumen (JSON). Coba Ollama dulu, fallback ke chain cloud.
+async function requestDocJSON(system, prompt) {
+  try {
+    return await withTimeout(callOllamaRaw(system, prompt, { num_predict: 2048 }), config.ollamaTimeoutMs, 'Ollama');
+  } catch (err) {
+    logger.warn({ err }, 'Ollama gagal/timeout generate konten dokumen, fallback ke chain cloud');
+    const { reply } = await callCloudChain({ system, prompt });
+    return reply;
+  }
+}
+
+// Generate konten terstruktur untuk dokumen docx/xlsx/pptx dari permintaan bebas user.
+// Retry sekali dengan instruksi lebih tegas kalau balasan pertama bukan JSON valid.
+export async function generateDocumentContent(docType, request) {
+  const system = docSystemPrompt(docType);
+  const prompt = `Permintaan pengguna: ${request}`;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const finalSystem = attempt === 0
+      ? system
+      : `${system}\nPERINGATAN: Balasanmu sebelumnya BUKAN JSON valid. Kali ini balas HANYA JSON murni, tanpa satu karakter pun di luar JSON.`;
+    const raw = await requestDocJSON(finalSystem, prompt);
+    const jsonText = stripJsonFences(raw);
+    try {
+      const data = JSON.parse(jsonText);
+      return normalizeDocumentContent(docType, data);
+    } catch (err) {
+      logger.warn({ attempt, docType, raw: raw.slice(0, 300) }, 'Konten dokumen dari AI bukan JSON valid');
+      if (attempt === 1) {
+        const parseErr = new Error('AI tidak mengembalikan JSON valid untuk konten dokumen');
+        parseErr.name = 'InvalidDocumentJSON';
+        throw parseErr;
+      }
+    }
+  }
+}
+
 // Fallback cloud generik untuk pesan {role:'system'|'user'} (dipakai parser reminder dll).
 export async function chatWithCloudFallback(messages) {
   const system = messages.find((m) => m.role === 'system')?.content ?? '';

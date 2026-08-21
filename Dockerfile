@@ -3,8 +3,10 @@ FROM node:20-slim
 # Zona waktu default (WIB) supaya waktu reminder/jadwal konsisten
 ENV TZ=Asia/Jakarta
 
-# better-sqlite3 butuh build tools untuk native binding
-RUN apt-get update && apt-get install -y python3 make g++ tzdata && rm -rf /var/lib/apt/lists/*
+# better-sqlite3 butuh build tools untuk native binding.
+# ffmpeg dipakai mode "!dengerin" untuk convert balasan suara (mp3 dari ElevenLabs TTS)
+# ke ogg/opus, format wajib supaya tampil sebagai voice note di WhatsApp.
+RUN apt-get update && apt-get install -y python3 make g++ tzdata ffmpeg && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

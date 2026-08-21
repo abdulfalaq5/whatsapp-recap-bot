@@ -19,14 +19,35 @@ export const HELP_TEXT = `Command yang tersedia:
 • 💸 !catat <jumlah> <catatan> | !rekap bulan ini | !export
 • 🌤️ !cuaca | 🕌 !sholat
 • 🖼️ !carigambar <kata kunci> | 🎨 !buatgambar <deskripsi>
+• 📄 !buatdoc <permintaan> - buat dokumen Word/Excel/PPT, contoh: !buatdoc buatkan laporan pengeluaran dalam excel (atau langsung "@kacan buatkan draft surat izin ke word")
 • 📍 !regislokasi <username> <password> [nama] | !regislokasilist | !regislokasireset <username> <password-baru>
 • 🛰️ !carilokasi <nama> - kirim lokasi terkini + update tiap 5 menit | !stopcarilokasi - hentikan semua pantauan lokasi di chat ini
+• 🎧 !dengerin - mode dengerin voice note (transkrip → jawab → balas suara) | !sudahdengerin - matikan
 • 📸 Kirim gambar + caption "@kacan <pertanyaan>" - asisten baca isi gambarnya
 • 🧾 Kirim foto struk + caption "@kacan tolong catat harga ini" - asisten baca struk, minta konfirmasi (ya/batal) sebelum disimpan ke pengeluaran
 • @kacan help / !help / !bantuan - tampilkan daftar command
 • 🔎 !cari <topik> - cari info di internet sekarang (selalu pakai Tavily)
 • @kacan tambahkan group id ini untuk akses kamu - daftarkan group ini (khusus admin)
 Admin: !restart | !log | !broadcast <pesan> | !tambahmember <nomor> <nama> | !tambahgroup | !hapusgroup <group id> | !reset semua`;
+
+// Deteksi jenis dokumen (docx/xlsx/pptx) dari kata kunci di pesan user.
+export function detectDocType(text) {
+  const lower = String(text || '').toLowerCase();
+  if (/\b(excel|xlsx|spreadsheet)\b/.test(lower)) return 'xlsx';
+  if (/\b(word|docx|surat)\b/.test(lower)) return 'docx';
+  if (/\b(ppt|pptx|powerpoint|presentasi|slide)\b/.test(lower)) return 'pptx';
+  return null;
+}
+
+const DOC_GENERATE_VERB = /\b(buat(?:kan|in)?|bikin(?:kan|in)?|generate|susun(?:kan)?)\b/i;
+const DOC_NOUN_HINT = /\b(dokumen|laporan|draft|file)\b/i;
+
+// Deteksi permintaan natural language untuk generate dokumen kantoran, misal
+// "buatkan laporan pengeluaran dalam excel" atau "buatin draft surat izin ke word".
+function isDocumentGenerateRequest(text) {
+  if (!DOC_GENERATE_VERB.test(text)) return false;
+  return detectDocType(text) !== null || DOC_NOUN_HINT.test(text);
+}
 
 function stripPrefix(text, prefixes) {
   for (const p of prefixes) {
@@ -108,6 +129,14 @@ export function parseMessage(text, config) {
     return { kind: 'shopping', arg: t.slice('!belanja'.length).trim() };
   }
 
+  // Mode dengerin voice note.
+  if (lower.startsWith('!sudahdengerin')) {
+    return { kind: 'dengerin-stop' };
+  }
+  if (lower.startsWith('!dengerin')) {
+    return { kind: 'dengerin-start' };
+  }
+
   // OwnTracks (lokasi keluarga). Dicek urut dari prefix terpanjang dulu supaya
   // !regislokasilist / !regislokasireset tidak ketelan sama !regislokasi.
   if (lower.startsWith('!regislokasilist')) {
@@ -146,6 +175,11 @@ export function parseMessage(text, config) {
     return { kind: 'image-generate', arg: t.slice('!buatgambar'.length).trim() };
   }
 
+  // Generate dokumen kantoran (Word/Excel/PowerPoint)
+  if (lower.startsWith('!buatdoc')) {
+    return { kind: 'document-generate', arg: t.slice('!buatdoc'.length).trim() };
+  }
+
   // Pencarian internet paksa (selalu pakai Tavily). Ditaruh SETELAH !carigambar
   // supaya tidak menelan prefix command gambar.
   if (lower.startsWith('!cari')) {
@@ -175,6 +209,12 @@ export function parseMessage(text, config) {
   // Command level AI dicek dulu sebelum pesan diproses sebagai prompt asisten.
   const levelCommand = matchLevelCommand(t, config);
   if (levelCommand) return levelCommand;
+
+  // Natural language: "@kacan buatkan laporan ... dalam excel/word/ppt".
+  if (lower.includes(triggerWord) && isDocumentGenerateRequest(lower)) {
+    const question = t.replace(new RegExp(triggerWord, 'gi'), '').trim();
+    return { kind: 'document-generate', arg: question };
+  }
 
   if (lower.includes(triggerWord)) {
     // buang trigger word dari isi pertanyaan (di mana pun posisinya, case-insensitive)

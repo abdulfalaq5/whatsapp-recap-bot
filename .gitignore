@@ -6,6 +6,7 @@ auth_session/
 data/
 *.db
 Download/
+temp/
 
 # Env
 .env

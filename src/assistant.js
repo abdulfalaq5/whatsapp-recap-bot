@@ -88,22 +88,16 @@ async function getRecentGroupContext(groupId, minutes = 180) {
   return formatChatHistory(rows);
 }
 
-export async function handleAssistant(sock, logger, config, message) {
-  const groupId = message.key.remoteJid;
-  const senderName = message.senderName || message.pushName || 'User';
-  const senderNumber = message.senderNumber || '';
-
-  if (!rateLimitOk(groupId, Number(config.ASSISTANT_RATE_LIMIT_SECONDS || 5))) {
-    logger.info({ groupId }, 'Assistant rate limited, skipping');
-    return;
-  }
-
+// Bangun konteks (memory grup/personal/shared, cuaca, web search) lalu panggil askAI dan
+// simpan hasilnya ke memory. Dipakai oleh handleAssistant (chat teks) dan mode "!dengerin"
+// (voice note) — supaya keduanya berbagi flow asisten yang sama persis.
+export async function getAssistantReply(logger, config, { groupId, question, senderName, senderNumber }) {
   const memoryLimit = Number(config.CONVERSATION_MEMORY_LIMIT || 20);
   const recentTurns = storage.getRecentConversation(groupId, memoryLimit);
   const conversationText = buildConversationText(recentTurns, memoryLimit);
 
   let groupContext = '';
-  if (shouldAttachGroupContext(message.text)) {
+  if (shouldAttachGroupContext(question)) {
     groupContext = await getRecentGroupContext(groupId);
   }
 
@@ -118,31 +112,45 @@ export async function handleAssistant(sock, logger, config, message) {
   if (sharedText) contextParts.push(`Konteks keluarga bersama (agenda/pengumuman):\n${sharedText}`);
   if (personalHistory) contextParts.push(`Riwayat obrolan pribadi kamu dengan asisten (${senderName}):\n${personalHistory}`);
   if (groupContext) contextParts.push(`Obrolan grup terbaru (${groupContext.split('\n').length} baris):\n${groupContext}`);
-  const weatherData = await maybeAttachWeather(message.text);
+  const weatherData = await maybeAttachWeather(question);
   if (weatherData) contextParts.push(weatherData);
-  const webData = await maybeAttachWebSearch(message.text, config, logger);
+  const webData = await maybeAttachWebSearch(question, config, logger);
   if (webData) contextParts.push(webData);
   const fullContext = contextParts.join('\n\n');
 
-  logger.info({ groupId, question: message.text, hasPersonal: !!personalHistory, hasShared: !!sharedText, hasWeather: !!weatherData, hasWebSearch: !!webData }, 'Assistant request');
+  logger.info({ groupId, question, hasPersonal: !!personalHistory, hasShared: !!sharedText, hasWeather: !!weatherData, hasWebSearch: !!webData }, 'Assistant request');
+
+  const reply = await askAI({
+    chatId: groupId,
+    question,
+    context: fullContext || conversationText,
+    senderName,
+    senderNumber,
+  });
+  const now = Date.now();
+
+  storage.saveConversationTurn({ groupId, role: 'user', senderName, content: question, timestamp: now });
+  storage.saveConversationTurn({ groupId, role: 'assistant', senderName: null, content: reply, timestamp: now });
+  if (senderNumber) {
+    storage.saveMemberTurn({ number: senderNumber, name: senderName, role: 'user', content: question, timestamp: now });
+    storage.saveMemberTurn({ number: senderNumber, name: null, role: 'assistant', content: reply, timestamp: now });
+  }
+
+  return reply;
+}
+
+export async function handleAssistant(sock, logger, config, message) {
+  const groupId = message.key.remoteJid;
+  const senderName = message.senderName || message.pushName || 'User';
+  const senderNumber = message.senderNumber || '';
+
+  if (!rateLimitOk(groupId, Number(config.ASSISTANT_RATE_LIMIT_SECONDS || 5))) {
+    logger.info({ groupId }, 'Assistant rate limited, skipping');
+    return;
+  }
 
   try {
-    const reply = await askAI({
-      chatId: groupId,
-      question: message.text,
-      context: fullContext || conversationText,
-      senderName,
-      senderNumber,
-    });
-    const now = Date.now();
-
-    storage.saveConversationTurn({ groupId, role: 'user', senderName, content: message.text, timestamp: now });
-    storage.saveConversationTurn({ groupId, role: 'assistant', senderName: null, content: reply, timestamp: now });
-    if (senderNumber) {
-      storage.saveMemberTurn({ number: senderNumber, name: senderName, role: 'user', content: message.text, timestamp: now });
-      storage.saveMemberTurn({ number: senderNumber, name: null, role: 'assistant', content: reply, timestamp: now });
-    }
-
+    const reply = await getAssistantReply(logger, config, { groupId, question: message.text, senderName, senderNumber });
     await sock.sendMessage(groupId, { text: reply }, { quoted: message.original });
     logger.info({ groupId }, 'Assistant reply sent');
   } catch (err) {
